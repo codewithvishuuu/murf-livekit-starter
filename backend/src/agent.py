@@ -1,6 +1,7 @@
 import logging
 
 from dotenv import load_dotenv
+from prompt import SYSTEM_PROMPT
 from livekit import rtc
 from livekit.agents import (
     Agent,
