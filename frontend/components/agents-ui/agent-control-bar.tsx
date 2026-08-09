@@ -108,16 +108,21 @@ function AgentChatInput({ chatOpen, onSend = async () => {}, className }: AgentC
   }, [chatOpen]);
 
   return (
-    <div className={cn('mb-3 flex grow items-end gap-2 rounded-md pl-1 text-sm', className)}>
+    <div
+      className={cn(
+        'bg-background/80 flex w-full items-end gap-2 rounded-2xl border border-emerald-500/15 px-2 py-2 shadow-sm sm:px-3',
+        className
+      )}
+    >
       <textarea
         autoFocus
         ref={inputRef}
         value={message}
         disabled={!chatOpen || isSending}
-        placeholder="Type something..."
+        placeholder="Share your health concern..."
         onKeyDown={handleKeyDown}
         onChange={(e) => setMessage(e.target.value)}
-        className="field-sizing-content max-h-16 min-h-8 flex-1 resize-none py-2 [scrollbar-width:thin] focus:outline-none disabled:cursor-not-allowed disabled:opacity-50"
+        className="text-foreground placeholder:text-muted-foreground field-sizing-content max-h-24 min-h-[42px] flex-1 resize-none rounded-xl border border-transparent bg-transparent px-3 py-2 text-sm leading-6 [scrollbar-width:thin] focus:border-emerald-500/30 focus:outline-none disabled:cursor-not-allowed disabled:opacity-50"
       />
       <Button
         size="icon"
@@ -126,7 +131,7 @@ function AgentChatInput({ chatOpen, onSend = async () => {}, className }: AgentC
         variant={isDisabled ? 'secondary' : 'default'}
         title={isSending ? 'Sending...' : 'Send'}
         onClick={handleButtonClick}
-        className="self-end disabled:cursor-not-allowed"
+        className="h-10 w-10 shrink-0 self-end rounded-full disabled:cursor-not-allowed"
       >
         {isSending ? <Loader className="animate-spin" /> : <SendHorizontal />}
       </Button>
@@ -288,8 +293,8 @@ export function AgentControlBar({
     <div
       aria-label="Voice assistant controls"
       className={cn(
-        'bg-background border-input/50 dark:border-muted flex flex-col border p-3 drop-shadow-md/3',
-        variant === 'livekit' ? 'rounded-[31px]' : 'rounded-lg',
+        'bg-background/95 flex flex-col border border-emerald-500/10 p-2.5 shadow-[0_16px_40px_-24px_rgba(15,23,42,0.35)] backdrop-blur sm:p-3',
+        variant === 'livekit' ? 'rounded-[20px]' : 'rounded-lg',
         className
       )}
       {...props}
@@ -298,7 +303,7 @@ export function AgentControlBar({
         {...MOTION_PROPS}
         inert={!(isChatOpen || isChatOpenUncontrolled)}
         animate={isChatOpen || isChatOpenUncontrolled ? 'visible' : 'hidden'}
-        className="border-input/50 flex w-full items-start overflow-hidden border-b"
+        className="flex w-full items-start overflow-hidden"
       >
         <AgentChatInput
           chatOpen={isChatOpen || isChatOpenUncontrolled}
@@ -307,8 +312,8 @@ export function AgentControlBar({
         />
       </motion.div>
 
-      <div className="flex gap-1">
-        <div className="flex grow gap-1">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex flex-1 flex-wrap items-center gap-1.5">
           {/* Toggle Microphone */}
           {visibleControls.microphone && (
             <AgentTrackControl
@@ -393,7 +398,7 @@ export function AgentControlBar({
             disabled={!isConnected}
             className={cn(
               variant === 'livekit' &&
-                'bg-destructive/10 dark:bg-destructive/10 text-destructive hover:bg-destructive/20 dark:hover:bg-destructive/20 focus:bg-destructive/20 focus-visible:ring-destructive/20 dark:focus-visible:ring-destructive/4 rounded-full font-mono text-xs font-bold tracking-wider'
+                'bg-destructive/10 dark:bg-destructive/10 text-destructive hover:bg-destructive/20 dark:hover:bg-destructive/20 focus:bg-destructive/20 focus-visible:ring-destructive/20 dark:focus-visible:ring-destructive/4 min-h-10 shrink-0 rounded-full px-4 py-2.5 font-mono text-xs font-bold tracking-wider sm:px-5'
             )}
           >
             <span className="hidden md:inline">END CALL</span>

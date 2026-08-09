@@ -1,6 +1,7 @@
 import { Public_Sans } from 'next/font/google';
 import localFont from 'next/font/local';
 import { headers } from 'next/headers';
+import { HeartPulseIcon } from 'lucide-react';
 import { ThemeProvider } from '@/components/app/theme-provider';
 import { ThemeToggle } from '@/components/app/theme-toggle';
 import { cn } from '@/lib/shadcn/utils';
@@ -47,7 +48,7 @@ export default async function RootLayout({ children }: RootLayoutProps) {
   const hdrs = await headers();
   const appConfig = await getAppConfig(hdrs);
   const styles = getStyles(appConfig);
-  const { pageTitle, pageDescription, companyName, logo, logoDark } = appConfig;
+  const { pageTitle, pageDescription, companyName } = appConfig;
 
   return (
     <html
@@ -71,38 +72,32 @@ export default async function RootLayout({ children }: RootLayoutProps) {
           enableSystem
           disableTransitionOnChange
         >
-          <header className="fixed top-0 left-0 z-50 hidden w-full flex-row justify-between p-6 md:flex">
-            <a
-              target="_blank"
-              rel="noopener noreferrer"
-              href="https://livekit.io"
-              className="scale-100 transition-transform duration-300 hover:scale-110"
-            >
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img src={logo} alt={`${companyName} Logo`} className="block size-6 dark:hidden" />
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img
-                src={logoDark ?? logo}
-                alt={`${companyName} Logo`}
-                className="hidden size-6 dark:block"
-              />
-            </a>
-            <span className="text-foreground font-mono text-xs font-bold tracking-wider uppercase">
-              Built with{' '}
-              <a
-                target="_blank"
-                rel="noopener noreferrer"
-                href="https://docs.livekit.io/agents"
-                className="underline underline-offset-4"
-              >
-                LiveKit Agents
-              </a>
-            </span>
-          </header>
-
-          {children}
-          <div className="group fixed bottom-0 left-1/2 z-50 mb-2 -translate-x-1/2">
-            <ThemeToggle className="translate-y-20 transition-transform delay-150 duration-300 group-hover:translate-y-0" />
+          <div className="flex h-dvh flex-col overflow-hidden">
+            <header className="mx-auto flex w-full max-w-3xl shrink-0 items-center justify-between gap-3 px-4 py-3 sm:px-0">
+              <div className="bg-background/80 flex items-center gap-2.5 rounded-full border border-emerald-500/15 py-1.5 pr-3.5 pl-1.5 shadow-sm backdrop-blur">
+                <div className="flex h-7 w-7 items-center justify-center rounded-full bg-emerald-500/10 text-emerald-700 dark:text-emerald-300">
+                  <HeartPulseIcon className="size-4" />
+                </div>
+                <span className="text-foreground text-sm font-semibold tracking-tight">
+                  {companyName}
+                </span>
+              </div>
+              <div className="flex items-center gap-3">
+                <span className="text-muted-foreground hidden font-mono text-[11px] font-bold tracking-wider uppercase lg:inline">
+                  Built with{' '}
+                  <a
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    href="https://docs.livekit.io/agents"
+                    className="underline underline-offset-4"
+                  >
+                    LiveKit Agents
+                  </a>
+                </span>
+                <ThemeToggle />
+              </div>
+            </header>
+            <div className="min-h-0 flex-1">{children}</div>
           </div>
         </ThemeProvider>
       </body>

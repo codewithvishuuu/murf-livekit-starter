@@ -23,7 +23,7 @@ export function ThemeToggle({ className }: ThemeToggleProps) {
         <span className="sr-only">Enable dark color scheme</span>
         <MoonIcon
           suppressHydrationWarning
-          size={16}
+          size={14}
           weight="bold"
           className={cn(theme !== 'dark' && 'opacity-25')}
         />
@@ -36,7 +36,7 @@ export function ThemeToggle({ className }: ThemeToggleProps) {
         <span className="sr-only">Enable light color scheme</span>
         <SunIcon
           suppressHydrationWarning
-          size={16}
+          size={14}
           weight="bold"
           className={cn(theme !== 'light' && 'opacity-25')}
         />
@@ -49,7 +49,7 @@ export function ThemeToggle({ className }: ThemeToggleProps) {
         <span className="sr-only">Enable system color scheme</span>
         <MonitorIcon
           suppressHydrationWarning
-          size={16}
+          size={14}
           weight="bold"
           className={cn(theme !== 'system' && 'opacity-25')}
         />

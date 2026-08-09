@@ -6,7 +6,6 @@ import { useSession } from '@livekit/components-react';
 import { WarningIcon } from '@phosphor-icons/react/dist/ssr';
 import type { AppConfig } from '@/app-config';
 import { AgentSessionProvider } from '@/components/agents-ui/agent-session-provider';
-import { StartAudioButton } from '@/components/agents-ui/start-audio-button';
 import { ViewController } from '@/components/app/view-controller';
 import { Toaster } from '@/components/ui/sonner';
 import { useAgentErrors } from '@/hooks/useAgentErrors';
@@ -41,10 +40,11 @@ export function App({ appConfig }: AppProps) {
   return (
     <AgentSessionProvider session={session}>
       <AppSetup />
-      <main className="grid h-svh grid-cols-1 place-content-center">
-        <ViewController appConfig={appConfig} />
+      <main className="flex h-full min-h-0 w-full items-center justify-center overflow-hidden bg-[radial-gradient(circle_at_top,_rgba(16,185,129,0.12),_transparent_55%)] px-3 py-3 sm:px-4 sm:py-4 lg:px-6">
+        <div className="h-full w-full max-w-6xl">
+          <ViewController appConfig={appConfig} />
+        </div>
       </main>
-      <StartAudioButton label="Start Audio" />
       <Toaster
         icons={{
           warning: <WarningIcon weight="bold" />,
