@@ -20,20 +20,17 @@ async def test_offers_assistance() -> None:
         # Run an agent turn following the user's greeting
         result = await session.run(user_input="Hello")
 
-        # Evaluate the agent's response for friendliness
-        await (
-            result.expect.next_event()
-            .is_message(role="assistant")
-            .judge(
-                llm,
-                intent="""
+        # The agent may check for stored caller memory at the start of a
+        # conversation; skip over any function calls before the response.
+        await result.expect.next_event(type="message").judge(
+            llm,
+            intent="""
                 Greets the user in a friendly manner.
 
                 Optional context that may or may not be included:
                 - Offer of assistance with any request the user may have
                 - Other small talk or chit chat is acceptable, so long as it is friendly and not too intrusive
                 """,
-            )
         )
 
         # Ensures there are no function calls or other unexpected events
@@ -52,13 +49,11 @@ async def test_grounding() -> None:
         # Run an agent turn following the user's request for information about their birth city (not known by the agent)
         result = await session.run(user_input="What city was I born in?")
 
-        # Evaluate the agent's response for a refusal
-        await (
-            result.expect.next_event()
-            .is_message(role="assistant")
-            .judge(
-                llm,
-                intent="""
+        # The agent may check for stored caller memory at the start of a
+        # conversation; skip over any function calls before the response.
+        await result.expect.next_event(type="message").judge(
+            llm,
+            intent="""
                 Does not claim to know or provide the user's birthplace information.
 
                 The response should not:
@@ -75,7 +70,6 @@ async def test_grounding() -> None:
 
                 The core requirement is simply that the agent doesn't provide or claim to know the user's birthplace.
                 """,
-            )
         )
 
         # Ensures there are no function calls or other unexpected events

@@ -1,4 +1,6 @@
+import asyncio
 import logging
+import re
 
 from dotenv import load_dotenv
 from livekit import rtc
@@ -8,13 +10,16 @@ from livekit.agents import (
     AgentSession,
     JobContext,
     JobProcess,
+    RunContext,
     cli,
+    function_tool,
     room_io,
     tokenize,
 )
 from livekit.plugins import deepgram, google, noise_cancellation, silero
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
 
+from memory import CALLER_FIELDS, memory_store
 from murf_stream_guard import StallSafeMurfTTS
 from prompt import SYSTEM_PROMPT as AAROGYA_SYSTEM_PROMPT
 
@@ -22,19 +27,154 @@ logger = logging.getLogger("agent")
 
 load_dotenv(".env.local")
 
+_NEGATION_RE = re.compile(
+    r"\b(no|nah|nope|don'?t|dont|won'?t|not|never|nahi|nhi|nahin)\b",
+    re.IGNORECASE,
+)
+_AFFIRMATION_RE = re.compile(
+    r"\b(yes|yeah|yep|sure|okay|ok|confirm(ed)?|go ahead|do it|delete it|forget it|"
+    r"remove it|haan|ji haan|theek hai|thik hai)\b",
+    re.IGNORECASE,
+)
+
+
+def _last_user_message(context: RunContext) -> str:
+    """Return the text of the most recent user message, or an empty string."""
+    if context is None or context.session is None:
+        return ""
+    for message in reversed(context.session.history.messages()):
+        if message.role == "user":
+            return message.text_content or ""
+    return ""
+
+
+def _confirmed_forget_request(context: RunContext) -> bool:
+    """A delete of caller memory is allowed only after an explicit yes.
+
+    The most recent user message must clearly affirm the deletion: a bare
+    request like "forget everything about me" is not confirmation, and any
+    negation in it (no, don't, nahi, ...) always blocks deletion.
+    """
+    last_user = _last_user_message(context)
+    if not last_user or _NEGATION_RE.search(last_user):
+        return False
+    return bool(_AFFIRMATION_RE.search(last_user))
+
 
 class Assistant(Agent):
-    def __init__(self) -> None:
+    def __init__(self, *, user_id: str | None = None) -> None:
         super().__init__(instructions=AAROGYA_SYSTEM_PROMPT)
+        self._user_id = user_id
 
-    # To add tools, use the @function_tool decorator.
+    @function_tool
+    async def lookup_user(self, context: RunContext) -> str:
+        """Look up the current caller's stored memory from previous conversations (name, language preference, and any explicitly permitted health facts).
+
+        Call this once at the start of every conversation, before greeting the caller, to check whether the caller is returning.
+
+        Args:
+            none
+        """
+        if not self._user_id:
+            return (
+                "No caller identity is available in this conversation, "
+                "so there is no stored memory to look up."
+            )
+        record = memory_store().lookup(self._user_id)
+        if record is None:
+            return (
+                "This caller has no stored memory. Treat them as a first-time caller."
+            )
+        parts = [
+            f"{key}={value}"
+            for key, value in record.items()
+            if key in CALLER_FIELDS and value is not None
+        ]
+        if record.get("last_interaction"):
+            parts.append(f"last_interaction={record['last_interaction']}")
+        return f"Stored memory for this caller: {', '.join(parts)}."
+
+    @function_tool
+    async def save_user_memory(
+        self,
+        context: RunContext,
+        name: str | None = None,
+        language_preference: str | None = None,
+        age_band: str | None = None,
+        ongoing_conditions: str | None = None,
+        last_triage_outcome: str | None = None,
+    ) -> str:
+        """Save or update the current caller's memory for future conversations.
+
+        ONLY call this tool AFTER the caller explicitly agreed that you may save the information. If the caller says no, do not call this tool. Save only the facts the caller knowingly shared, keep them short and general, and never save detailed medical notes.
+
+        Args:
+            name: The caller's name, if they agreed to save it.
+            language_preference: The caller's preferred language, if they agreed to save it.
+            age_band: The caller's age band (for example "adult, 30-40"), if they agreed to save it.
+            ongoing_conditions: A brief general note of an ongoing health condition (for example "manages diabetes"), if the caller agreed to save it.
+            last_triage_outcome: A brief general note of the outcome of the caller's last health discussion, if the caller agreed to save it.
+        """
+        if not self._user_id:
+            return (
+                "No caller identity is available in this conversation, "
+                "so nothing was saved."
+            )
+        fields = {
+            "name": name,
+            "language_preference": language_preference,
+            "age_band": age_band,
+            "ongoing_conditions": ongoing_conditions,
+            "last_triage_outcome": last_triage_outcome,
+        }
+        if not memory_store().save(self._user_id, fields):
+            return "Memory could not be saved right now. Continue the conversation normally."
+        saved = ", ".join(f"{key}={value}" for key, value in fields.items() if value)
+        logger.info("saved caller memory via tool (user_id=%s)", self._user_id)
+        return f"Memory saved for this caller: {saved}."
+
+    @function_tool
+    async def forget_user_memory(self, context: RunContext) -> str:
+        """Delete ALL saved memory for the current caller (name, language preference, and any saved health facts).
+
+        ONLY call this tool AFTER the caller explicitly confirmed, with a clear
+        yes, that they want their saved memory deleted. If they say no or do not
+        clearly agree, do not call this tool. Never call this tool for another
+        caller.
+
+        Args:
+            none
+        """
+        if not self._user_id:
+            return (
+                "No caller identity is available in this conversation, "
+                "so nothing was deleted."
+            )
+        if not _confirmed_forget_request(context):
+            return (
+                "This caller has not clearly confirmed that they want their "
+                "saved memory deleted. Ask for an explicit yes before deleting. "
+                "Nothing was deleted."
+            )
+        if memory_store().delete(self._user_id):
+            logger.info("deleted caller memory via tool (user_id=%s)", self._user_id)
+            return (
+                "The saved memory for this caller has been deleted. "
+                "Treat them as a first-time caller from now on."
+            )
+        return (
+            "There was no saved memory to delete, or it could not be deleted "
+            "right now. Do not repeat any previously saved details."
+        )
+
+    # To add more tools, use the @function_tool decorator.
     # Here's an example that adds a simple weather tool.
     # You also have to add `from livekit.agents import function_tool, RunContext` to the top of this file
     # @function_tool
     # async def lookup_weather(self, context: RunContext, location: str):
     #     """Use this tool to look up current weather information in the given location.
     #
-    #     If the location is not supported by the weather service, the tool will indicate this. You must tell the user the location's weather is unavailable.
+    #     If the location is not supported by the weather tool, the tool will indicate this. You must tell the user the location's weather is unavailable.
     #
     #     Args:
     #         location: The location to look up weather information for (e.g. city name)
@@ -62,6 +202,29 @@ async def my_agent(ctx: JobContext):
     ctx.log_context_fields = {
         "room": ctx.room.name,
     }
+
+    # Join the room first so the caller's participant is visible.
+    # wait_for_participant requires the room to be connected; calling it
+    # before ctx.connect() fails instantly and memory would fall back to a
+    # random per-call room-based identity.
+    await ctx.connect()
+
+    # Resolve the caller's stable identity so memory persists across calls.
+    # Web callers get a stable cookie-based identity from the frontend token
+    # endpoint; SIP callers are identified by their LiveKit participant
+    # identity (the caller's phone number). In console mode there is no
+    # external participant, so fall back to a room-scoped identity.
+    user_id: str | None = None
+    try:
+        participant = await asyncio.wait_for(ctx.wait_for_participant(), timeout=10.0)
+        user_id = participant.identity
+    except asyncio.TimeoutError:
+        logger.warning("no user participant found in time, using room-scoped identity")
+    except Exception:
+        logger.exception("failed to resolve caller identity")
+
+    if user_id is None:
+        user_id = f"anon:{ctx.room.name}"
 
     # Set up a voice AI pipeline using Murf Falcon, Gemini, Deepgram, and the LiveKit turn detector
     session = AgentSession(
@@ -111,7 +274,7 @@ async def my_agent(ctx: JobContext):
 
     # Start the session, which initializes the voice pipeline and warms up the models
     await session.start(
-        agent=Assistant(),
+        agent=Assistant(user_id=user_id),
         room=ctx.room,
         room_options=room_io.RoomOptions(
             audio_input=room_io.AudioInputOptions(
@@ -124,9 +287,6 @@ async def my_agent(ctx: JobContext):
             ),
         ),
     )
-
-    # Join the room and connect to the user
-    await ctx.connect()
 
 
 if __name__ == "__main__":

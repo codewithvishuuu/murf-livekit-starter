@@ -1,5 +1,7 @@
+import { cookies } from 'next/headers';
 import { NextResponse } from 'next/server';
 import { AccessToken, type AccessTokenOptions, type VideoGrant } from 'livekit-server-sdk';
+import { randomUUID } from 'node:crypto';
 import { RoomConfiguration } from '@livekit/protocol';
 
 type ConnectionDetails = {
@@ -17,6 +19,29 @@ const AGENT_NAME = process.env.AGENT_NAME;
 
 // don't cache the results
 export const revalidate = 0;
+
+const CALLER_ID_COOKIE = 'aarogya_caller_id';
+const CALLER_ID_PREFIX = 'aarogya_caller_';
+const CALLER_ID_MAX_AGE = 60 * 60 * 24 * 365; // one year
+
+// The caller's stable identity, so the agent can recognize a returning caller
+// across separate calls. The first call creates an ID and stores it in a
+// cookie; later calls reuse it. Rooms themselves stay unique per call.
+async function resolveCallerIdentity(): Promise<string> {
+  const store = await cookies();
+  const existing = store.get(CALLER_ID_COOKIE)?.value;
+  if (existing && existing.startsWith(CALLER_ID_PREFIX)) {
+    return existing;
+  }
+  const identity = `${CALLER_ID_PREFIX}${randomUUID()}`;
+  store.set(CALLER_ID_COOKIE, identity, {
+    httpOnly: true,
+    sameSite: 'lax',
+    path: '/',
+    maxAge: CALLER_ID_MAX_AGE,
+  });
+  return identity;
+}
 
 export async function POST(req: Request) {
   try {
@@ -46,7 +71,7 @@ export async function POST(req: Request) {
 
     // Generate participant token
     const participantName = 'user';
-    const participantIdentity = `voice_assistant_user_${Math.floor(Math.random() * 10_000)}`;
+    const participantIdentity = await resolveCallerIdentity();
     const roomName = `voice_assistant_room_${Math.floor(Math.random() * 10_000)}`;
 
     const participantToken = await createParticipantToken(
