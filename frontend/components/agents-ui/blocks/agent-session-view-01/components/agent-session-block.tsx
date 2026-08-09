@@ -171,6 +171,15 @@ export function AgentSessionView_01({
   supportsVideoInput = true,
   supportsScreenShare = true,
   isPreConnectBufferEnabled = true,
+  audioVisualizerType,
+  audioVisualizerColor,
+  audioVisualizerColorShift,
+  audioVisualizerBarCount,
+  audioVisualizerGridRowCount,
+  audioVisualizerGridColumnCount,
+  audioVisualizerRadialBarCount,
+  audioVisualizerRadialRadius,
+  audioVisualizerWaveLineWidth,
   onDisconnectIntent,
   onDeviceError,
   ref,
@@ -235,7 +244,8 @@ export function AgentSessionView_01({
             size="sm"
             state={agentState}
             audioTrack={agentAudioTrack}
-            barCount={4}
+            color={audioVisualizerColor}
+            barCount={audioVisualizerBarCount ?? 4}
             className="h-8 shrink-0 items-center gap-0 sm:gap-[2px]"
           >
             <span className="h-full min-h-[6px] w-1 rounded-full bg-current/25 transition-colors duration-250 ease-linear data-[lk-highlighted=true]:bg-current" />

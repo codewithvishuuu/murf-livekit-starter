@@ -237,7 +237,7 @@ export function ViewController({ appConfig }: ViewControllerProps) {
               : uiState === 'CONNECTING'
                 ? 'Please wait while we connect you to Aarogya Sahayak.'
                 : uiState === 'CALL_ENDED'
-                  ? 'Thank you for talking with Aarogya Sahayak.'
+                  ? 'Your health matters. We’re here whenever you need guidance.'
                   : 'Get general health information and wellness guidance through a simple voice conversation.'
           }
           helperText={statusMessage}

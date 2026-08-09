@@ -1,7 +1,6 @@
 import logging
 
 from dotenv import load_dotenv
-from prompt import SYSTEM_PROMPT as AAROGYA_SYSTEM_PROMPT
 from livekit import rtc
 from livekit.agents import (
     Agent,
@@ -10,12 +9,14 @@ from livekit.agents import (
     JobContext,
     JobProcess,
     cli,
-    inference,
-    tokenize,
     room_io,
+    tokenize,
 )
-from livekit.plugins import murf, silero, google, deepgram, noise_cancellation
+from livekit.plugins import deepgram, google, noise_cancellation, silero
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
+
+from murf_stream_guard import StallSafeMurfTTS
+from prompt import SYSTEM_PROMPT as AAROGYA_SYSTEM_PROMPT
 
 logger = logging.getLogger("agent")
 
@@ -74,7 +75,7 @@ async def my_agent(ctx: JobContext):
         ),
         # Text-to-speech (TTS) is your agent's voice, turning the LLM's text into speech that the user can hear
         # See all available models as well as voice selections at https://docs.livekit.io/agents/models/tts/
-        tts=murf.TTS(
+        tts=StallSafeMurfTTS(
             voice="Abhinav",
             locale="en-IN",
             style="Conversation",

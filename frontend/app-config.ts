@@ -38,7 +38,7 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
   pageDescription: 'AI Health Access Assistant for general health guidance through voice.',
 
   supportsChatInput: true,
-  supportsVideoInput: false,
+  supportsVideoInput: true,
   supportsScreenShare: false,
   isPreConnectBufferEnabled: true,
 
