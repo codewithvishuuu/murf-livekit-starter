@@ -174,6 +174,15 @@ The default system prompt makes this a **customer support agent**. You can chang
 
 **Where the prompt lives:** `backend/src/agent.py`- the `SYSTEM_PROMPT` constant (near the top of the file, after the imports). Change that string to change what your voice agent does.
 
+## Healthcare Facility Lookup (Day 5)
+
+The "Aarogya Sahayak" agent includes a `find_health_facilities` voice tool: ask "Is there a PHC in Ranchi?" or "Find a government hospital near me" and the agent looks up real facilities and speaks them naturally.
+
+- **Data source:** the public OpenStreetMap **Overpass API** — **live at query time**, no API key required.
+- **Data origin:** community-maintained OpenStreetMap data (including government health facilities imported from data.gov.in). It is **not government-verified** and may be incomplete or outdated — the agent always says when the data was last refreshed.
+- **Failure behavior:** service unavailable, timeouts, and invalid responses produce a graceful spoken fallback; the agent never invents facilities, names, phones, or addresses.
+- Optional tuning: `HEALTH_FACILITIES_TIMEOUT_S` in `backend/.env.local` (default 10s per request).
+
 ### Example prompts (copy-paste)
 
 **Customer Support (default):**

@@ -176,6 +176,17 @@ Default is Google Gemini. To switch:
 - **Gemini (default):** Set `GOOGLE_API_KEY` in `.env.local`
 - **OpenAI:** Set `OPENAI_API_KEY`, install `livekit-agents[openai]`, and change the `llm=` argument
 
+### Healthcare Facility Lookup (Day 5)
+
+The agent can look up healthcare facilities (government health centres, PHCs, CHCs, hospitals, clinics, dispensaries, sub-centres) through the `find_health_facilities` tool.
+
+- **Data source:** the public [OpenStreetMap Overpass API](https://overpass-api.de/) (`https://overpass-api.de/api/interpreter`, with a backup mirror at `overpass.kumi.systems`) — **live at query time**.
+- **Data origin:** community-maintained OpenStreetMap data, including government health facilities imported from data.gov.in by the OSM India Health Facilities Import. It is **not government-verified** and may be incomplete or outdated.
+- **No API key required.** Optional tuning: `HEALTH_FACILITIES_TIMEOUT_S` (per-request timeout in seconds, default 10).
+- **Failure behavior:** timeouts, network errors, rate limits, and invalid responses return a natural spoken fallback ("the facility data service is temporarily unavailable"); empty results tell the caller no matching facilities were found and to confirm with their District Health Office. The agent never invents facilities, names, phones, or addresses.
+- **Freshness:** the tool reports the Overpass `timestamp_osm_base` ("the facility data was last refreshed on …") when available; otherwise it honestly says the community-maintained data may not be fully up to date.
+- **Attribution:** OpenStreetMap contributors, © OpenStreetMap (ODbL). System prompt and tool description instruct the agent to keep results spoken and natural.
+
 ## Testing
 
 The project includes an eval suite based on the LiveKit Agents [testing framework](https://docs.livekit.io/agents/build/testing/):

@@ -19,6 +19,7 @@ from livekit.agents import (
 from livekit.plugins import deepgram, google, noise_cancellation, silero
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
 
+import health_facilities
 from memory import CALLER_FIELDS, memory_store
 from murf_stream_guard import StallSafeMurfTTS
 from prompt import SYSTEM_PROMPT as AAROGYA_SYSTEM_PROMPT
@@ -166,6 +167,70 @@ class Assistant(Agent):
             "There was no saved memory to delete, or it could not be deleted "
             "right now. Do not repeat any previously saved details."
         )
+
+    @function_tool
+    async def find_health_facilities(
+        self,
+        context: RunContext,
+        district: str,
+        location: str | None = None,
+        facility_type: str | None = None,
+    ) -> str:
+        """Look up real healthcare facilities in a district using public OpenStreetMap data.
+
+        Call this tool when the user asks where to find healthcare facilities -
+        for example government health centres, PHCs (Primary Health Centres),
+        CHCs, hospitals, clinics, dispensaries, sub-centres, or any question
+        like "is there a PHC near me?", "find a government hospital", or "are
+        there healthcare facilities in my district?".
+
+        Returns a spoken summary of the facilities found in the given district
+        with each facility's name, type, whether it is a government facility,
+        its locality, and phone number when available, plus when the data was
+        last refreshed.
+
+        Args:
+            district: The required name of the district, city, or administrative area to search (for example "Ranchi" or "Jaipur").
+            location: An optional village, block, or locality within the district to narrow the search.
+            facility_type: An optional type filter: "hospital", "phc", "chc", "clinic", "sub-centre", "dispensary", or "government hospital".
+
+        Data comes from community-maintained OpenStreetMap and may be
+        incomplete or outdated; never describe facilities as government
+        verified.
+        """
+        if not district or not district.strip():
+            return (
+                "I need a district name to look up healthcare facilities. "
+                "Which district are you in?"
+            )
+        logger.info(
+            "health facility lookup (district=%s, location=%s, facility_type=%s)",
+            district,
+            location,
+            facility_type,
+        )
+        try:
+            return await asyncio.wait_for(
+                health_facilities.search_health_facilities(
+                    district=district,
+                    location=location,
+                    facility_type=facility_type,
+                ),
+                timeout=health_facilities.lookup_total_timeout_s(),
+            )
+        except asyncio.TimeoutError:
+            logger.warning("health facility lookup timed out (district=%s)", district)
+            return (
+                f"I'm sorry, I couldn't look up healthcare facilities in "
+                f"{district} right now. The facility data service is temporarily "
+                f"unavailable. Please try again in a few minutes."
+            )
+        except Exception:
+            logger.exception("health facility lookup failed (district=%s)", district)
+            return (
+                f"I'm sorry, I couldn't look up healthcare facilities in "
+                f"{district} right now. Please try again in a few minutes."
+            )
 
     # To add more tools, use the @function_tool decorator.
     # Here's an example that adds a simple weather tool.
