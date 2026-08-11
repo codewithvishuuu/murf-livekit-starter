@@ -183,6 +183,21 @@ The "Aarogya Sahayak" agent includes a `find_health_facilities` voice tool: ask 
 - **Failure behavior:** service unavailable, timeouts, and invalid responses produce a graceful spoken fallback; the agent never invents facilities, names, phones, or addresses.
 - Optional tuning: `HEALTH_FACILITIES_TIMEOUT_S` in `backend/.env.local` (default 10s per request).
 
+## Outbound Calling (Day 6)
+
+The same "Aarogya Sahayak" agent can place an **outbound healthcare follow-up call** (appointment or medication reminder). A dialing utility (`backend/src/telephony/outbound.py`) creates a dedicated room, dials the destination through your LiveKit Cloud **outbound SIP trunk** (`LIVEKIT_SIP_OUTBOUND_TRUNK_ID`), dispatches the existing `my-agent` into the call, monitors it, and cleans the room up.
+
+- **One call per run only** — no auto-redialing is implemented. The utility reports clear success/failure (no answer, busy, unavailable, rejected, immediate hang-up) and refuses invalid/missing numbers and configuration before dialing anything.
+- The agent's outbound opening always states **who** is calling, **why** (scheduled follow-up/reminder), and **how to end the call** (say "end the call"/"stop" or hang up) — see `OUTBOUND_OPENING` in `backend/src/prompt.py`.
+- All credentials and the trunk ID are read from `backend/.env.local` and never printed (the CLI's `--dry-run` prints only `set`/`MISSING`).
+- **One manual test call:** start the agent (`uv run python src/agent.py dev`), then in another terminal:
+  ```bash
+  cd backend
+  uv run python -m telephony.outbound '+919876543210'   # dial your own test number
+  ```
+- Run `uv run python -m telephony.outbound --dry-run` first to verify configuration without dialing.
+- **Safety/consent:** only dial numbers you are authorised to call; the callee must be told who is calling and why, and opt-out ("don't call me again") must be honoured instantly. See `backend/README.md` → "Outbound Calling (Day 6)" for the full matrix and setup.
+
 ### Example prompts (copy-paste)
 
 **Customer Support (default):**
@@ -244,8 +259,13 @@ Murf Falcon and LiveKit handle audio format internally. For advanced options, se
 murf-livekit-starter/
 ├── backend/                 # Python voice agent (LiveKit Agents + Murf Falcon)
 │   ├── src/
-│   │   └── agent.py         # Agent entrypoint, pipeline (STT/LLM/TTS), system prompt
-│   ├── tests/               # Agent tests
+│   │   ├── agent.py         # Agent entrypoint, pipeline (STT/LLM/TTS), system prompt
+│   │   ├── prompt.py        # Aarogya Sahayak prompt + Day 6 outbound opening
+│   │   ├── memory.py        # Day 4: caller memory store
+│   │   ├── health_facilities.py  # Day 5: facility lookup
+│   │   └── telephony/
+│   │       └── outbound.py  # Day 6: outbound dialing utility + CLI
+│   ├── tests/               # Agent tests (Days 4-6)
 │   ├── .env.example         # Backend env template
 │   ├── pyproject.toml       # Python deps (uv)
 │   └── railway.toml         # Railway deploy config

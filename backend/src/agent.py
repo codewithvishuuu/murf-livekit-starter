@@ -1,5 +1,7 @@
 import asyncio
+import json
 import logging
+import os
 import re
 
 from dotenv import load_dotenv
@@ -22,6 +24,7 @@ from livekit.plugins.turn_detector.multilingual import MultilingualModel
 import health_facilities
 from memory import CALLER_FIELDS, memory_store
 from murf_stream_guard import StallSafeMurfTTS
+from prompt import OUTBOUND_OPENING
 from prompt import SYSTEM_PROMPT as AAROGYA_SYSTEM_PROMPT
 
 logger = logging.getLogger("agent")
@@ -62,9 +65,32 @@ def _confirmed_forget_request(context: RunContext) -> bool:
     return bool(_AFFIRMATION_RE.search(last_user))
 
 
+def _is_outbound_room(room: rtc.Room | None) -> bool:
+    """True when the room was created for an outbound call by the dialer.
+
+    The dialing utility marks its rooms with JSON metadata containing
+    ``outbound: true``. Every other flow (browser, inbound SIP, console)
+    keeps the pre-Day-6 behavior.
+    """
+    if room is None or not room.metadata:
+        return False
+    try:
+        return json.loads(room.metadata).get("outbound") is True
+    except (json.JSONDecodeError, TypeError):
+        return False
+
+
 class Assistant(Agent):
-    def __init__(self, *, user_id: str | None = None) -> None:
-        super().__init__(instructions=AAROGYA_SYSTEM_PROMPT)
+    def __init__(
+        self,
+        *,
+        user_id: str | None = None,
+        outbound_instructions: str | None = None,
+    ) -> None:
+        instructions = AAROGYA_SYSTEM_PROMPT
+        if outbound_instructions:
+            instructions = f"{instructions}\n{outbound_instructions}"
+        super().__init__(instructions=instructions)
         self._user_id = user_id
 
     @function_tool
@@ -291,6 +317,17 @@ async def my_agent(ctx: JobContext):
     if user_id is None:
         user_id = f"anon:{ctx.room.name}"
 
+    # Outbound (Day 6) calls are launched by the dialer into rooms flagged in
+    # metadata; only those rooms get the extra outbound-opening instructions.
+    # Browser, inbound-SIP and console conversations are byte-for-byte the
+    # same as before Day 6.
+    outbound = _is_outbound_room(ctx.room)
+    outbound_instructions = None
+    if outbound:
+        caller_name = os.getenv("OUTBOUND_CALLER_NAME", "Aarogya Sahayak")
+        outbound_instructions = OUTBOUND_OPENING.format(caller_name=caller_name)
+    logger.info("room_mode=%s", "outbound" if outbound else "standard")
+
     # Set up a voice AI pipeline using Murf Falcon, Gemini, Deepgram, and the LiveKit turn detector
     session = AgentSession(
         # Speech-to-text (STT) is your agent's ears, turning the user's speech into text that the LLM can understand
@@ -339,7 +376,7 @@ async def my_agent(ctx: JobContext):
 
     # Start the session, which initializes the voice pipeline and warms up the models
     await session.start(
-        agent=Assistant(user_id=user_id),
+        agent=Assistant(user_id=user_id, outbound_instructions=outbound_instructions),
         room=ctx.room,
         room_options=room_io.RoomOptions(
             audio_input=room_io.AudioInputOptions(
