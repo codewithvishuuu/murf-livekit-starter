@@ -21,6 +21,7 @@ from livekit.agents import (
 from livekit.plugins import deepgram, google, noise_cancellation, silero
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
 
+import escalations
 import health_facilities
 from memory import CALLER_FIELDS, memory_store
 from murf_stream_guard import StallSafeMurfTTS
@@ -58,6 +59,20 @@ def _confirmed_forget_request(context: RunContext) -> bool:
     The most recent user message must clearly affirm the deletion: a bare
     request like "forget everything about me" is not confirmation, and any
     negation in it (no, don't, nahi, ...) always blocks deletion.
+    """
+    last_user = _last_user_message(context)
+    if not last_user or _NEGATION_RE.search(last_user):
+        return False
+    return bool(_AFFIRMATION_RE.search(last_user))
+
+
+def _confirmed_escalation_request(context: RunContext) -> bool:
+    """A human-help escalation is created only after an explicit caller yes.
+
+    The most recent user message must clearly affirm the offer of human
+    support (yes / sure / ok / haan / theek hai, ...). A bare request like
+    "escalate me" is not confirmation and never creates a request; any
+    negation (no, don't, nahi, ...) always blocks creation.
     """
     last_user = _last_user_message(context)
     if not last_user or _NEGATION_RE.search(last_user):
@@ -257,6 +272,94 @@ class Assistant(Agent):
                 f"I'm sorry, I couldn't look up healthcare facilities in "
                 f"{district} right now. Please try again in a few minutes."
             )
+
+    @function_tool
+    async def create_escalation(
+        self,
+        context: RunContext,
+        summary: str,
+        what_happened: str,
+        agent_checked: str | None = None,
+        urgency: str | None = None,
+        language: str | None = None,
+        preferred_follow_up: str | None = None,
+    ) -> str:
+        """Create a human-help request so a healthcare professional can follow up with the caller.
+
+        Use this tool ONLY in the two situations that need human support:
+
+        1. The caller reported a red-flag or potentially serious symptom
+           (for example severe chest pain, severe difficulty breathing,
+           unconsciousness, or severe bleeding).
+        2. The caller explicitly asked you to diagnose their condition.
+
+        CRITICAL PERMISSION RULE: before calling this tool you MUST have
+        asked the caller for permission (for example: "This may need help from
+        a healthcare professional. I can send a short summary of what you've
+        shared to the human support team. Would you like me to do that?") and
+        the caller MUST have said yes. If the caller said no, or has not yet
+        answered, do NOT call this tool. This tool refuses to create a
+        request when the caller has not confirmed.
+
+        Do not call this tool for ordinary health questions (for example
+        cold symptoms, hydration, or sleep advice) — answer those normally.
+
+        Never copy the whole conversation into the fields. Keep the summary
+        short and general. Sensitive details (passwords, OTPs, PINs, account
+        numbers) are never stored.
+
+        Args:
+            summary: A short, general summary (one or two sentences) of why the caller needs human help.
+            what_happened: A brief note of what the caller reported.
+            agent_checked: A brief note of what you already explained or checked with the caller.
+            urgency: "low", "medium", "high", or "emergency". Defaults to "medium". Use "emergency" only for clearly life-threatening symptoms.
+            language: The language the caller spoke, if known.
+            preferred_follow_up: How the human team should follow up, for example "voice call". Defaults to "voice call".
+        """
+        if not _confirmed_escalation_request(context):
+            return (
+                "The caller has NOT clearly confirmed that they want a human-help "
+                "request created, or did not answer yet. Ask for permission first, "
+                "for example: 'This may need help from a healthcare professional. "
+                "I can send a short summary of what you've shared to the human support "
+                "team. Would you like me to do that?' and wait for an explicit yes. "
+                "Do NOT create the request until the caller says yes."
+            )
+        resolved_follow_up = preferred_follow_up or "voice call"
+        result = escalations.escalation_store().create(
+            caller_id=self._user_id,
+            summary=summary,
+            what_happened=what_happened,
+            agent_checked=agent_checked,
+            urgency=urgency,
+            language=language,
+            preferred_follow_up=resolved_follow_up,
+        )
+        if result is None:
+            logger.warning(
+                "escalation could not be created (user_id=%s)", self._user_id
+            )
+            return (
+                "I couldn't create the human-help request right now. Please try "
+                "again in a few minutes."
+            )
+        reference_id, note = result
+        logger.info(
+            "created human-help request (reference_id=%s, user_id=%s)",
+            reference_id,
+            self._user_id,
+        )
+        if note == "reused existing open request":
+            return (
+                f"A human-help request is already open for you with reference ID "
+                f"{reference_id}. A human support team can review it. I cannot "
+                f"guarantee an immediate response."
+            )
+        return (
+            f"Your request has been created with reference ID {reference_id}. "
+            f"A human support team can review it. I cannot guarantee an "
+            f"immediate response."
+        )
 
     # To add more tools, use the @function_tool decorator.
     # Here's an example that adds a simple weather tool.

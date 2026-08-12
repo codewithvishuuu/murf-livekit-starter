@@ -314,6 +314,41 @@ call me again".
 - The duration cap and per-call room teardown bound the blast radius of a
   misconfigured test call; redial loops are intentionally not implemented.
 
+### Human-Help Escalations (Day 7)
+
+Aarogya Sahayak can hand a situation to a human support team. The agent
+only does this in two situations — red-flag / potentially serious symptoms
+(e.g. severe chest pain, severe difficulty breathing, unconsciousness) and
+explicit diagnosis requests — and ONLY after the caller explicitly says
+yes to sharing a short summary. Ordinary health questions never trigger an
+escalation.
+
+- **Flow:** safe guidance (emergency symptoms always get emergency
+  guidance first) → explain why a human may be needed → ask permission →
+  caller says yes → `create_escalation` stores a scrubbed, minimal record →
+  the caller receives a reference ID (e.g. `ESC-20260812-001`) without any
+  promise of an immediate response. If the caller says no, nothing is
+  created or shared.
+- **Storage:** local SQLite at `backend/data/escalations.db`
+  (`ESCALATIONS_DB_PATH`), reusing the caller-memory architecture. Default
+  status `open`; supported statuses `open` / `in_progress` / `resolved`.
+- **Privacy:** only whitelisted fields are stored and the free-text fields
+  are scrubbed of OTPs, PINs, passwords, account numbers and long digit
+  runs before persistence. The full conversation is never stored.
+- **De-duplication:** the same caller + same summary with an already-open
+  request reuses the existing reference ID instead of piling up duplicates.
+- **Viewing the queue:**
+  - Frontend staff view: start the frontend and open
+    `http://localhost:3000/admin` (reads the JSON mirror at
+    `backend/data/escalations.json`, overridable with
+    `ESCALATIONS_JSON_PATH`).
+  - Terminal: `uv run python -m escalations list` and
+    `uv run python -m escalations view ESC-20260812-001`.
+- **Testing:** `tests/test_escalations.py` covers the store, reference-ID
+  uniqueness, permission gating (yes/no/bare request), sensitive-data
+  scrubbing, de-duplication, database-failure tolerance, and LLM-judged
+  end-to-end permission flows.
+
 ### Testing
 
 The project includes an eval suite based on the LiveKit Agents [testing framework](https://docs.livekit.io/agents/build/testing/):
@@ -322,7 +357,7 @@ The project includes an eval suite based on the LiveKit Agents [testing framewor
 uv run pytest
 ```
 
-Tests are in [`tests/test_agent.py`](tests/test_agent.py) and use LLM-as-judge evaluations to verify the agent behaves correctly (friendly greetings, grounding, refusing harmful requests). Day 5 facility tests live in [`tests/test_health_facilities.py`](tests/test_health_facilities.py), Day 4 memory tests in [`tests/test_memory.py`](tests/test_memory.py), and Day 6 outbound-dialing tests in [`tests/test_outbound.py`](tests/test_outbound.py) — the outbound tests inject a fake LiveKit client and never place a real call.
+Tests are in [`tests/test_agent.py`](tests/test_agent.py) and use LLM-as-judge evaluations to verify the agent behaves correctly (friendly greetings, grounding, refusing harmful requests). Day 5 facility tests live in [`tests/test_health_facilities.py`](tests/test_health_facilities.py), Day 4 memory tests in [`tests/test_memory.py`](tests/test_memory.py), Day 6 outbound-dialing tests in [`tests/test_outbound.py`](tests/test_outbound.py) (fake client, no real calls), and Day 7 escalation tests in [`tests/test_escalations.py`](tests/test_escalations.py).
 
 To run tests in CI, you'll need to add `LIVEKIT_URL`, `LIVEKIT_API_KEY`, and `LIVEKIT_API_SECRET` as repository secrets.
 
@@ -357,13 +392,15 @@ backend/
 │   ├── prompt.py         # Aarogya Sahayak system prompt + outbound opening
 │   ├── memory.py         # Day 4: caller memory store
 │   ├── health_facilities.py  # Day 5: Overpass-based facility lookup
+│   ├── escalations.py    # Day 7: human-help escalation store + CLI
 │   └── telephony/
 │       └── outbound.py   # Day 6: outbound dialing utility + CLI
 ├── tests/
 │   ├── test_agent.py     # LLM-judged eval suite
 │   ├── test_outbound.py  # Day 6 dialing tests (fake client, no real calls)
 │   ├── test_health_facilities.py  # Day 5 tests
-│   └── test_memory.py    # Day 4 tests
+│   ├── test_memory.py    # Day 4 tests
+│   └── test_escalations.py  # Day 7 tests
 ├── .env.example           # Environment variable template
 ├── pyproject.toml         # Python dependencies (uv)
 ├── Dockerfile             # Production container
