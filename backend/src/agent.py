@@ -3,6 +3,8 @@ import json
 import logging
 import os
 import re
+from collections.abc import Callable
+from uuid import uuid4
 
 from dotenv import load_dotenv
 from livekit import rtc
@@ -23,6 +25,7 @@ from livekit.plugins.turn_detector.multilingual import MultilingualModel
 
 import escalations
 import health_facilities
+from call_outcomes import CallOutcomeTracker
 from memory import CALLER_FIELDS, memory_store
 from murf_stream_guard import StallSafeMurfTTS
 from prompt import OUTBOUND_OPENING
@@ -101,12 +104,14 @@ class Assistant(Agent):
         *,
         user_id: str | None = None,
         outbound_instructions: str | None = None,
+        on_escalation_created: Callable[[], None] | None = None,
     ) -> None:
         instructions = AAROGYA_SYSTEM_PROMPT
         if outbound_instructions:
             instructions = f"{instructions}\n{outbound_instructions}"
         super().__init__(instructions=instructions)
         self._user_id = user_id
+        self._on_escalation_created = on_escalation_created
 
     @function_tool
     async def lookup_user(self, context: RunContext) -> str:
@@ -349,6 +354,8 @@ class Assistant(Agent):
             reference_id,
             self._user_id,
         )
+        if self._on_escalation_created is not None:
+            self._on_escalation_created()
         if note == "reused existing open request":
             return (
                 f"A human-help request is already open for you with reference ID "
@@ -431,11 +438,29 @@ async def my_agent(ctx: JobContext):
         outbound_instructions = OUTBOUND_OPENING.format(caller_name=caller_name)
     logger.info("room_mode=%s", "outbound" if outbound else "standard")
 
+    # Day 8 — call analytics. Resolve the channel so each completed call can
+    # be recorded with a minimal, non-sensitive outcome record (see
+    # call_outcomes.py). SIP telephony, outbound dialer rooms, browser
+    # sessions, and console sessions are all kept distinguishable.
+    if outbound:
+        channel = "outbound"
+    elif (
+        participant is not None
+        and participant.kind == rtc.ParticipantKind.PARTICIPANT_KIND_SIP
+    ):
+        channel = "sip"
+    elif participant is not None:
+        channel = "browser"
+    else:
+        channel = "console"
+
     # Set up a voice AI pipeline using Murf Falcon, Gemini, Deepgram, and the LiveKit turn detector
     session = AgentSession(
         # Speech-to-text (STT) is your agent's ears, turning the user's speech into text that the LLM can understand
         # See all available models at https://docs.livekit.io/agents/models/stt/
-        stt=deepgram.STT(model="nova-3"),
+        # language="multi" lets Deepgram Nova-3 detect the caller's language
+        # per utterance (English, Hindi, or Hinglish) and transcribe it.
+        stt=deepgram.STT(model="nova-3", language="multi"),
         # A Large Language Model (LLM) is your agent's brain, processing user input and generating a response
         # See all available models at https://docs.livekit.io/agents/models/llm/
         llm=google.LLM(
@@ -443,6 +468,12 @@ async def my_agent(ctx: JobContext):
         ),
         # Text-to-speech (TTS) is your agent's voice, turning the LLM's text into speech that the user can hear
         # See all available models as well as voice selections at https://docs.livekit.io/agents/models/tts/
+        # "Abhinav" is the production male Murf voice. Its original locale
+        # "en-IN" is restored here (it was part of the production TTS
+        # configuration before the multilingual work). Abhinav is a
+        # multilingual-native Murf voice, so per-utterance text language
+        # auto-detection still lets English, Hindi, and Hinglish replies be
+        # spoken natively.
         tts=StallSafeMurfTTS(
             voice="Abhinav",
             locale="en-IN",
@@ -477,9 +508,28 @@ async def my_agent(ctx: JobContext):
     # # Start the avatar and wait for it to join
     # await avatar.start(session, room=ctx.room)
 
+    # Day 8 — call outcome tracking. A per-call tracker collects
+    # deterministic success signals while the conversation runs and records
+    # the outcome when the job (call) shuts down. It only observes chat
+    # items and the escalation tool; it never stores transcripts or caller
+    # content (see call_outcomes.py).
+    tracker = CallOutcomeTracker(call_id=f"call-{uuid4().hex}", channel=channel)
+    session.on(
+        "conversation_item_added", lambda ev: tracker.on_conversation_item(ev.item)
+    )
+
+    async def _record_call_outcome() -> None:
+        tracker.record()
+
+    ctx.add_shutdown_callback(_record_call_outcome)
+
     # Start the session, which initializes the voice pipeline and warms up the models
     await session.start(
-        agent=Assistant(user_id=user_id, outbound_instructions=outbound_instructions),
+        agent=Assistant(
+            user_id=user_id,
+            outbound_instructions=outbound_instructions,
+            on_escalation_created=tracker.mark_escalation_created,
+        ),
         room=ctx.room,
         room_options=room_io.RoomOptions(
             audio_input=room_io.AudioInputOptions(
