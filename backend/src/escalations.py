@@ -15,7 +15,15 @@ It deliberately follows the ``memory.py`` architecture:
 - a strict whitelist of stored fields — only minimal, caller-approved
   information needed for a human to understand the escalation,
 - every stored summary is scrubbed of sensitive material (OTP/PIN/passwords,
-  account numbers, long digit runs) before it is persisted.
+  account numbers, PANs, long digit runs) before it is persisted,
+- deterministic, rule-based urgency classification (``classify_urgency``)
+  so red-flag/emergency situations are always marked appropriately without
+  an LLM,
+- duplicate prevention: an open request for the same caller with the same
+  normalized summary is reused instead of creating a second request,
+- a resolution callback: an explicit, admin-initiated action (never
+  automatic) that uses the Day 6 outbound dialer to call the user back,
+  protected against accidental duplicate callbacks.
 
 A human-readable JSON mirror is written next to the database after every
 change so the frontend staff view (``frontend/app/admin``) and any simple
@@ -25,12 +33,15 @@ Only the store logic lives here; the agent-side permission flow lives in
 ``agent.py`` as the ``create_escalation`` function tool.
 """
 
+import asyncio
+import inspect
 import json
 import logging
 import os
 import re
 import sqlite3
 import threading
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -41,6 +52,14 @@ SUPPORTED_STATUSES = ("open", "in_progress", "resolved")
 SUPPORTED_URGENCIES = ("low", "medium", "high", "emergency")
 DEFAULT_STATUS = "open"
 DEFAULT_URGENCY = "medium"
+
+# Urgency ordering used by the deterministic classifier (higher = more urgent).
+URGENCY_ORDER: dict[str, int] = {
+    "low": 1,
+    "medium": 2,
+    "high": 3,
+    "emergency": 4,
+}
 
 # The only fields that may be stored. Keeps the escalation minimal and
 # prevents arbitrary (e.g. free-form medical or private) data from leaking in.
@@ -57,19 +76,35 @@ ESCALATION_FIELDS = (
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS escalations (
-    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
-    reference_id        TEXT NOT NULL UNIQUE,
-    caller_id           TEXT,
-    summary             TEXT NOT NULL,
-    what_happened       TEXT NOT NULL,
-    agent_checked       TEXT,
-    urgency             TEXT NOT NULL,
-    language            TEXT,
-    preferred_follow_up TEXT,
-    status              TEXT NOT NULL,
-    created_at          TEXT NOT NULL
+    id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+    reference_id            TEXT NOT NULL UNIQUE,
+    caller_id               TEXT,
+    summary                 TEXT NOT NULL,
+    what_happened           TEXT NOT NULL,
+    agent_checked           TEXT,
+    urgency                 TEXT NOT NULL,
+    language                TEXT,
+    preferred_follow_up     TEXT,
+    status                  TEXT NOT NULL,
+    created_at              TEXT NOT NULL,
+    resolved_callback_at    TEXT,
+    resolved_callback_count INTEGER NOT NULL DEFAULT 0
 )
 """
+
+# Additive migrations. Old databases (created before the optional Day 7
+# features) gain the new columns with safe defaults; existing rows and
+# reference IDs are never touched.
+_MIGRATIONS = (
+    (
+        "resolved_callback_at",
+        "ALTER TABLE escalations ADD COLUMN resolved_callback_at TEXT",
+    ),
+    (
+        "resolved_callback_count",
+        "ALTER TABLE escalations ADD COLUMN resolved_callback_count INTEGER NOT NULL DEFAULT 0",
+    ),
+)
 
 DEFAULT_DB_PATH = Path(__file__).resolve().parent.parent / "data" / "escalations.db"
 
@@ -101,9 +136,93 @@ _SENSITIVE_PATTERNS = (
         r"\b(?:card|ccv|cvv)\s*(?:no\.?|number)?\s*[:=]?\s*[\d -]{12,19}",
         re.IGNORECASE,
     ),
+    # pan card + value ("pan ABCDE1234F") and any bare PAN format
+    re.compile(
+        r"\b(?:pan)\s*(?:card|is|was|no\.?|number)?\s*[:=]?\s*[A-Z]{5}[0-9]{4}[A-Z]\b",
+        re.IGNORECASE,
+    ),
     # any bare run of 12-16 digits (account/card/aadhaar numbers)
     re.compile(r"\b\d{12,16}\b"),
 )
+
+# ---------------------------------------------------------------------------
+# Deterministic urgency classification (no LLM)
+# ---------------------------------------------------------------------------
+
+# Life-threatening: always "emergency".
+_EMERGENCY_PATTERNS = (
+    r"chest pain",
+    r"difficulty breathing",
+    r"can'?t breathe",
+    r"cannot breathe",
+    r"not breathing",
+    r"shortness of breath",
+    r"unconscious",
+    r"passed out",
+    r"fainted",
+    r"severe bleeding",
+    r"bleeding heavily",
+    r"heart attack",
+    r"stroke",
+    r"seizure",
+    r"choking",
+    r"blue lips",
+    r"suicid",
+    r"self[- ]harm",
+    r"overdose",
+    r"poison",
+    r"\bemergency\b",
+)
+
+# Serious but not immediately life-threatening: "high".
+_HIGH_PATTERNS = (
+    r"high fever",
+    r"severe pain",
+    r"severe headache",
+    r"vomiting blood",
+    r"blood in (?:stool|urine|vomit)",
+    r"broken bone",
+    r"fracture",
+    r"deep cut",
+    r"severe burn",
+    r"head injury",
+    r"dehydrat",
+    r"pneumonia",
+)
+
+# Requires human follow-up but is not urgent: "medium".
+_MEDIUM_PATTERNS = (
+    r"diagnos",
+    r"medical advice",
+    r"second opinion",
+    r"prescription",
+    r"medication",
+    r"treatment",
+    r"symptom",
+    r"follow-?up",
+    r"check-?up",
+    r"consult",
+    r"condition",
+)
+
+
+def classify_urgency(*texts: str | None) -> str:
+    """Deterministically classify urgency from free text (never an LLM).
+
+    Emergency keywords always win, then high, then medium; text with no
+    recognizable trigger classifies as ``low``. Used as the safety floor in
+    :meth:`EscalationStore.create`: a provided urgency is never downgraded
+    below the deterministic classification.
+    """
+    text = " ".join(part for part in texts if part).lower()
+    for patterns, level in (
+        (_EMERGENCY_PATTERNS, "emergency"),
+        (_HIGH_PATTERNS, "high"),
+        (_MEDIUM_PATTERNS, "medium"),
+    ):
+        if any(re.search(pattern, text) for pattern in patterns):
+            return level
+    return "low"
 
 
 def _now_iso() -> str:
@@ -128,6 +247,55 @@ def format_reference_id(date_stamp: str, sequence: int) -> str:
 def current_date_stamp() -> str:
     """UTC ``YYYYMMDD`` stamp used inside reference IDs."""
     return datetime.now(timezone.utc).strftime("%Y%m%d")
+
+
+def _normalize_text(text: str) -> str:
+    """Lowercase, strip punctuation and collapse whitespace.
+
+    Used by duplicate detection so "Severe chest pain." and "severe chest
+    pain" count as the same issue.
+    """
+    normalized = re.sub(r"[^a-z0-9 ]+", " ", text.lower())
+    return re.sub(r"\s+", " ", normalized).strip()
+
+
+# Caller identities that carry a dialable phone number. Web/console callers
+# use opaque identities and cannot be called back.
+_CALLBACK_CALLER_RE = re.compile(r"^sip-(\d{8,15})$")
+
+
+def _callback_destination(caller_id: str | None) -> str | None:
+    """Derive a dialable E.164 destination from a stored caller identity.
+
+    Only SIP caller identities (``sip-<digits>``, as written by the Day 6
+    dialer) can be called back; anything else returns ``None``.
+    """
+    if not caller_id:
+        return None
+    match = _CALLBACK_CALLER_RE.match(caller_id)
+    if match is None:
+        return None
+    return f"+{match.group(1)}"
+
+
+def _default_callback_dialer() -> Callable[..., Any]:
+    """Wire the Day 6 outbound dialer as the default callback mechanism.
+
+    Lazy import keeps this module importable without telephony/LiveKit
+    dependencies. The dialer is only ever given the destination and the
+    reference ID — never the summary or any private escalation detail.
+    """
+    from telephony.outbound import dial_outbound
+
+    def dialer(
+        destination: str, reference_id: str, metadata_extra: dict[str, Any]
+    ) -> Any:
+        return dial_outbound(
+            destination,
+            metadata_extra=metadata_extra,
+        )
+
+    return dialer
 
 
 class EscalationStore:
@@ -155,7 +323,28 @@ class EscalationStore:
         self._conn = sqlite3.connect(str(self.path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute(_SCHEMA)
+        self._apply_migrations()
         self._conn.commit()
+
+    def _apply_migrations(self) -> None:
+        """Add additive migrations to an existing database (never destructive).
+
+        Old databases lack the optional Day 7 columns; every existing row
+        keeps its data and reference ID, and the new columns get safe
+        defaults (``NULL`` / ``0``).
+        """
+        try:
+            columns = {
+                row["name"]
+                for row in self._conn.execute(
+                    "PRAGMA table_info(escalations)"
+                ).fetchall()
+            }
+            for column_name, statement in _MIGRATIONS:
+                if column_name not in columns:
+                    self._conn.execute(statement)
+        except sqlite3.Error:
+            logger.exception("failed to apply escalation migrations")
 
     @staticmethod
     def default_db_path() -> Path:
@@ -213,13 +402,24 @@ class EscalationStore:
             return None
         summary = scrub_sensitive(str(summary)).strip()
         what_happened = scrub_sensitive(str(what_happened or "")).strip()
+        agent_checked = scrub_sensitive(str(agent_checked or "")).strip() or None
         if not summary or not what_happened:
             logger.warning("refusing to create escalation without summary content")
             return None
 
-        resolved_urgency = (
-            urgency if urgency in SUPPORTED_URGENCIES else DEFAULT_URGENCY
-        )
+        # Deterministic urgency (never an LLM): a valid provided urgency is
+        # kept unless the text itself contains red-flag signals, in which
+        # case the deterministic classification wins (safety floor). An
+        # invalid/missing urgency always falls back to the classification.
+        classified = classify_urgency(summary, what_happened)
+        if urgency in SUPPORTED_URGENCIES:
+            resolved_urgency = (
+                classified
+                if URGENCY_ORDER[classified] > URGENCY_ORDER[urgency]
+                else urgency
+            )
+        else:
+            resolved_urgency = classified
         now = _now_iso()
 
         # De-duplicate: return an existing open request for the same caller
@@ -300,10 +500,12 @@ class EscalationStore:
     def find_open(self, caller_id: str, summary: str, window_s: float) -> str | None:
         """Return the reference ID of a matching open request, if any.
 
-        A duplicate is a request for the same caller with the same summary
-        whose ``status`` is still ``open`` and whose ``created_at`` falls
-        inside the last ``window_s`` seconds.
+        A duplicate is a request for the same caller with a sufficiently
+        equivalent summary (case/punctuation/whitespace-insensitive) whose
+        ``status`` is still ``open`` and whose ``created_at`` falls inside
+        the last ``window_s`` seconds.
         """
+        needle = _normalize_text(summary)
         try:
             with self._lock:
                 rows = self._conn.execute(
@@ -317,7 +519,7 @@ class EscalationStore:
             )
             return None
         for row in rows:
-            if (row["summary"] or "").strip().lower() != summary.strip().lower():
+            if _normalize_text(row["summary"] or "") != needle:
                 continue
             try:
                 created = datetime.fromisoformat(row["created_at"])
@@ -382,6 +584,104 @@ class EscalationStore:
             self._mirror()
         return updated
 
+    async def request_callback(
+        self,
+        reference_id: str,
+        *,
+        dialer: Callable[..., Any] | None = None,
+        retrigger: bool = False,
+    ) -> tuple[bool, str]:
+        """Trigger an explicit resolution callback for a RESOLVED escalation.
+
+        Safety rules:
+
+        - only a ``resolved`` request can be called back (the admin UI shows
+          the action only in that state),
+        - the destination is derived from the stored caller identity — only
+          SIP callers (``sip-<digits>``) have a dialable number,
+        - duplicate protection: once a callback has been recorded for this
+          resolution, a second one is refused unless ``retrigger=True``
+          (explicit admin choice),
+        - the dialer never receives the summary or any private detail — only
+          the destination and the reference ID,
+        - a failed dial is not recorded, so the same resolution can be
+          retried safely.
+
+        Never raises: dialer failures are caught, logged and returned as
+        ``(False, message)`` so the caller of this method can always proceed.
+
+        Args:
+            reference_id: The escalation to call back.
+            dialer: A callable invoked with keyword arguments
+                ``destination`` and ``reference_id`` (and, optionally,
+                ``metadata_extra``). Defaults to the Day 6 outbound dialer.
+            retrigger: Allow an explicit second callback for the same
+                resolution (admin "call again").
+        """
+        item = self.get(reference_id)
+        if item is None:
+            return False, "no escalation found with that reference ID"
+        if item["status"] != "resolved":
+            return (
+                False,
+                f"escalation {reference_id} is not resolved (status={item['status']})",
+            )
+        destination = _callback_destination(item.get("caller_id"))
+        if destination is None:
+            return (
+                False,
+                "no dialable phone number is available for this caller, "
+                "so no callback can be made",
+            )
+        if item.get("resolved_callback_at") and not retrigger:
+            return (
+                False,
+                f"a callback was already made for {reference_id}; "
+                f"use retrigger to call the user again explicitly",
+            )
+
+        dialer = dialer or _default_callback_dialer()
+        try:
+            outcome = dialer(
+                destination=destination,
+                reference_id=reference_id,
+                metadata_extra={
+                    "escalation_callback": True,
+                    "escalation_reference_id": reference_id,
+                },
+            )
+            if inspect.isawaitable(outcome):
+                await outcome
+        except Exception:
+            logger.exception("callback failed (reference_id=%s)", reference_id)
+            return (
+                False,
+                "the callback attempt failed; nothing was recorded, you can try again",
+            )
+
+        self._mark_callback(reference_id)
+        return (
+            True,
+            f"callback requested for {reference_id} (destination={destination})",
+        )
+
+    def _mark_callback(self, reference_id: str) -> None:
+        """Record a completed callback attempt (timestamp + counter)."""
+        try:
+            with self._lock:
+                self._conn.execute(
+                    "UPDATE escalations SET resolved_callback_at = ?, "
+                    "resolved_callback_count = resolved_callback_count + 1 "
+                    "WHERE reference_id = ?",
+                    (_now_iso(), reference_id),
+                )
+                self._conn.commit()
+            self._mirror()
+        except sqlite3.Error:
+            logger.exception(
+                "failed to record callback (reference_id=%s)", reference_id
+            )
+
     def close(self) -> None:
         with self._lock:
             self._conn.close()
@@ -402,7 +702,7 @@ def escalation_store() -> EscalationStore:
 
 
 # ---------------------------------------------------------------------------
-# CLI: python -m escalations list [--limit N]  |  python -m escalations view REF
+# CLI: python -m escalations list [--limit N] | view REF | callback REF [--force]
 # ---------------------------------------------------------------------------
 
 
@@ -418,10 +718,31 @@ def _print_escalation(item: dict[str, Any]) -> None:
     print(f"What happened:  {item.get('what_happened') or '?'}")
     if item.get("agent_checked"):
         print(f"Agent checked:  {item['agent_checked']}")
+    if item.get("resolved_callback_at"):
+        print(
+            f"Callback:       {item['resolved_callback_at']} "
+            f"(attempts: {item.get('resolved_callback_count') or 1})"
+        )
     print()
 
 
-def _main(argv: list[str] | None = None) -> int:
+async def _run_callback(reference_id: str, *, retrigger: bool = False) -> int:
+    """CLI entry: request a resolution callback through the Day 6 dialer.
+
+    Machine-readable first line: ``OK  <message>`` or ``FAILURE  <message>``
+    (the frontend admin action parses this).
+    """
+    ok, message = await escalation_store().request_callback(
+        reference_id, retrigger=retrigger
+    )
+    if ok:
+        print(f"OK  {message}")
+        return 0
+    print(f"FAILURE  {message}")
+    return 1
+
+
+async def _main(argv: list[str] | None = None) -> int:
     from argparse import ArgumentParser
 
     parser = ArgumentParser(
@@ -433,9 +754,23 @@ def _main(argv: list[str] | None = None) -> int:
     list_parser.add_argument("--limit", type=int, default=50)
     view_parser = sub.add_parser("view", help="show one escalation by reference ID")
     view_parser.add_argument("reference_id")
+    callback_parser = sub.add_parser(
+        "callback",
+        help="trigger an explicit resolution callback for a RESOLVED escalation "
+        "(uses the Day 6 outbound dialer; never automatic)",
+    )
+    callback_parser.add_argument("reference_id")
+    callback_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="explicitly retrigger a callback even if one was already made "
+        "for this resolution",
+    )
     args = parser.parse_args(argv)
 
     store = escalation_store()
+    if args.command == "callback":
+        return await _run_callback(args.reference_id, retrigger=args.force)
     if args.command == "view":
         item = store.get(args.reference_id)
         if item is None:
@@ -455,7 +790,7 @@ def _main(argv: list[str] | None = None) -> int:
 def main() -> None:
     import sys
 
-    raise SystemExit(_main(sys.argv[1:]))
+    raise SystemExit(asyncio.run(_main(sys.argv[1:])))
 
 
 if __name__ == "__main__":

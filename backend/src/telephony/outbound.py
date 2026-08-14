@@ -30,6 +30,7 @@ import uuid
 from argparse import ArgumentParser, Namespace
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import aiohttp
 from dotenv import load_dotenv
@@ -404,6 +405,7 @@ async def dial_outbound(
     agent_join_timeout_s: float = DEFAULT_AGENT_JOIN_TIMEOUT_S,
     wait_for_end: bool = True,
     monitor_interval_s: float = DEFAULT_MONITOR_INTERVAL_S,
+    metadata_extra: dict[str, Any] | None = None,
 ) -> OutboundCallResult:
     """Place ONE outbound call and report a clear outcome.
 
@@ -411,6 +413,11 @@ async def dial_outbound(
     to inject a fake client in tests; when omitted a real ``LiveKitAPI`` is
     created (using ``LIVEKIT_URL``/``LIVEKIT_API_KEY``/``LIVEKIT_API_SECRET``)
     and closed before returning.
+
+    ``metadata_extra`` (optional) is merged into the room metadata, so
+    callers such as the Day 7 resolution callback can attach a non-sensitive
+    audit note (e.g. the escalation reference ID) without changing the
+    dialing flow.
     """
     # --- config & input validation (nothing is dialed on failure) ---------
     _required_env("LIVEKIT_URL")
@@ -442,16 +449,17 @@ async def dial_outbound(
     client = api_client if api_client is not None else api.LiveKitAPI()
     try:
         # --- room for this single call -------------------------------------
+        room_metadata: dict[str, Any] = {
+            "outbound": True,
+            "purpose": "healthcare follow-up appointment or medication reminder",
+        }
+        if metadata_extra:
+            room_metadata.update(metadata_extra)
         room = await client.room.create_room(
             api.CreateRoomRequest(
                 name=resolved_room,
                 empty_timeout=120,
-                metadata=json.dumps(
-                    {
-                        "outbound": True,
-                        "purpose": "healthcare follow-up appointment or medication reminder",
-                    }
-                ),
+                metadata=json.dumps(room_metadata),
             )
         )
         room_name_final = room.name

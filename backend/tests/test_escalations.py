@@ -27,7 +27,10 @@ _REFERENCE_ID_RE = re.compile(r"^ESC-\d{8}-\d{3}$")
 
 @pytest.fixture
 def store(tmp_path):
-    s = EscalationStore(tmp_path / "escalations.db")
+    s = EscalationStore(
+        tmp_path / "escalations.db",
+        json_path=tmp_path / "escalations.json",
+    )
     yield s
     s.close()
 
@@ -155,11 +158,11 @@ def test_update_status_rejects_unknown_reference_and_status(store):
 
 def test_persistence_after_restart(tmp_path):
     path = tmp_path / "escalations.db"
-    first = EscalationStore(path)
+    first = EscalationStore(path, json_path=tmp_path / "escalations.json")
     reference_id, _ = first.create(**_args())
     first.close()
 
-    second = EscalationStore(path)
+    second = EscalationStore(path, json_path=tmp_path / "escalations.json")
     item = second.get(reference_id)
     assert item is not None
     assert item["reference_id"] == reference_id

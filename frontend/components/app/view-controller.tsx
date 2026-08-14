@@ -7,6 +7,7 @@ import { AnimatePresence, motion } from 'motion/react';
 import { useSessionContext } from '@livekit/components-react';
 import type { AppConfig } from '@/app-config';
 import { AgentSessionView_01 } from '@/components/agents-ui/blocks/agent-session-view-01';
+import { LanguageSelect, type PreferredLanguage } from '@/components/app/language-select';
 import { WelcomeView } from '@/components/app/welcome-view';
 
 function formatConversationDuration(durationMs: number) {
@@ -40,6 +41,8 @@ const VIEW_MOTION_PROPS = {
 
 interface ViewControllerProps {
   appConfig: AppConfig;
+  selectedLanguage: PreferredLanguage | null;
+  onSelectLanguage: (language: PreferredLanguage) => void;
 }
 
 type UiState = 'READY' | 'CONNECTING' | 'CALL_ENDED' | 'MIC_PERMISSION_ERROR';
@@ -62,13 +65,18 @@ function isMicrophonePermissionError(error: unknown) {
   );
 }
 
-export function ViewController({ appConfig }: ViewControllerProps) {
+export function ViewController({
+  appConfig,
+  selectedLanguage,
+  onSelectLanguage,
+}: ViewControllerProps) {
   const { isConnected, start, end } = useSessionContext();
   const { resolvedTheme } = useTheme();
   const [uiState, setUiState] = useState<UiState>('READY');
   const [statusMessage, setStatusMessage] = useState<string | undefined>(undefined);
   const [conversationDuration, setConversationDuration] = useState('00:00');
   const [isStartPending, setIsStartPending] = useState(false);
+  const [isLanguageSelectOpen, setIsLanguageSelectOpen] = useState(false);
   const wasConnectedRef = useRef(false);
   const disconnectIntentRef = useRef(false);
   const connectingTimeoutRef = useRef<number | null>(null);
@@ -115,7 +123,7 @@ export function ViewController({ appConfig }: ViewControllerProps) {
     }
   }, [clearConnectingTimeout, isConnected]);
 
-  const handleStartCall = useCallback(async () => {
+  const startConnecting = useCallback(async () => {
     if (isConnected || isStartPending) {
       return;
     }
@@ -152,6 +160,32 @@ export function ViewController({ appConfig }: ViewControllerProps) {
       setStatusMessage("We couldn't connect right now. Please try again.");
     }
   }, [clearConnectingTimeout, isConnected, isStartPending, start]);
+
+  const handleStartCall = useCallback(() => {
+    if (isConnected || isStartPending) {
+      return;
+    }
+
+    // The caller must pick a conversation language before the call starts.
+    // The choice is kept for the whole session, so it is only asked once.
+    if (!selectedLanguage) {
+      setIsLanguageSelectOpen(true);
+      return;
+    }
+
+    void startConnecting();
+  }, [isConnected, isStartPending, selectedLanguage, startConnecting]);
+
+  const handleSelectLanguage = useCallback(
+    (language: PreferredLanguage) => {
+      setIsLanguageSelectOpen(false);
+      // Written synchronously (ref) so the token fetched when the call
+      // starts already carries the caller's language choice.
+      onSelectLanguage(language);
+      void startConnecting();
+    },
+    [onSelectLanguage, startConnecting]
+  );
 
   const handleDisconnectIntent = useCallback(() => {
     disconnectIntentRef.current = true;
@@ -265,6 +299,12 @@ export function ViewController({ appConfig }: ViewControllerProps) {
           callDuration={uiState === 'CALL_ENDED' ? conversationDuration : undefined}
         />
       )}
+      <LanguageSelect
+        open={isLanguageSelectOpen}
+        selected={selectedLanguage}
+        onSelect={handleSelectLanguage}
+        onClose={() => setIsLanguageSelectOpen(false)}
+      />
     </AnimatePresence>
   );
 }

@@ -19,7 +19,7 @@ import pytest
 from livekit.agents import llm
 from livekit.agents.llm import ChatMessage
 
-from agent import Assistant
+from agent import Assistant, _error_is_unrecoverable
 from call_outcomes import (
     OUTCOME_FAILED,
     OUTCOME_SUCCESS,
@@ -293,6 +293,18 @@ def test_determine_outcome_rules():
         "Where can I find a hospital near me?",
         "I need some medicine advice",
         "Tell me about blood sugar",
+        "Can you give me some wellness tips?",
+        "I want healthy lifestyle advice",
+        "I want to live a healthier lifestyle",
+        "I've been having trouble sleeping",
+        "I want to start exercising more",
+        "I've been feeling very stressed lately",
+        "I want to improve my fitness",
+        "What nutrition advice do you have?",
+        "मुझे नींद नहीं आती और मैं थका हुआ हूँ",  # Hindi sleep + tired
+        "मैं व्यायाम और पोषण के बारे में जानना चाहता हूँ",  # Hindi exercise + nutrition
+        "mujhe tanav ho raha hai",  # Hinglish stress
+        "main vyayam karna chahta hoon",  # Hinglish exercise
     ],
 )
 def test_is_health_question_accepts_health_intent(text):
@@ -310,6 +322,9 @@ def test_is_health_question_accepts_health_intent(text):
         "Play my favorite song",
         "What city was I born in?",
         "Goodbye, thanks",
+        "Can you book a cab for me?",
+        "What should I wear today?",
+        "Tell me a funny joke about dogs",
     ],
 )
 def test_is_health_question_rejects_non_health_intent(text):
@@ -359,6 +374,67 @@ def test_tracker_health_question_gets_guidance_is_successful(store):
         _assistant("Of course. Please tell me more about what you are feeling.")
     )
     assert tracker.outcome() == (OUTCOME_SUCCESS, REASON_HEALTH_GUIDANCE)
+
+
+@pytest.mark.parametrize(
+    ("question", "answer"),
+    [
+        (
+            "Can you give me some wellness tips?",
+            "Here are a few wellness tips: sleep well and stay active.",
+        ),
+        (
+            "I want healthy lifestyle advice",
+            "A healthy lifestyle means balanced meals and regular exercise.",
+        ),
+        (
+            "I've been having trouble sleeping",
+            "Try a fixed sleep schedule and avoid screens before bed.",
+        ),
+        (
+            "I want to start exercising more",
+            "Start with light exercise and increase gradually.",
+        ),
+        (
+            "I've been feeling very stressed lately",
+            "Try deep breathing and short breaks to manage stress.",
+        ),
+        (
+            "I want to improve my fitness",
+            "Consistent fitness routines and rest days help.",
+        ),
+    ],
+)
+def test_tracker_wellness_questions_get_guidance_is_successful(store, question, answer):
+    tracker = CallOutcomeTracker(
+        call_id="c1",
+        channel="browser",
+        started_at="2026-08-13T10:00:00+00:00",
+        store=store,
+    )
+    tracker.on_conversation_item(_user(question))
+    tracker.on_conversation_item(_assistant(answer))
+    assert tracker.outcome() == (OUTCOME_SUCCESS, REASON_HEALTH_GUIDANCE)
+
+
+def test_tracker_unrelated_chat_is_not_health_guidance(store):
+    # An ordinary non-health conversation, even with friendly answers,
+    # must not become a health-guidance success.
+    tracker = CallOutcomeTracker(
+        call_id="c1",
+        channel="browser",
+        started_at="2026-08-13T10:00:00+00:00",
+        store=store,
+    )
+    tracker.on_conversation_item(_user("Hello"))
+    tracker.on_conversation_item(_assistant("Hello! How can I help you today?"))
+    tracker.on_conversation_item(_user("Tell me a joke"))
+    tracker.on_conversation_item(_assistant("Why did the chicken cross the road?"))
+    tracker.on_conversation_item(_user("What is the weather like today?"))
+    tracker.on_conversation_item(_assistant("It is sunny and warm."))
+    assert tracker.outcome() == (OUTCOME_FAILED, REASON_NO_USEFUL_OUTCOME)
+    assert tracker.record() is True
+    assert store.list()[0]["outcome"] == OUTCOME_FAILED
 
 
 def test_tracker_guidance_requires_health_question(store):
@@ -414,7 +490,9 @@ def test_tracker_record_writes_minimal_row(store):
     tracker.on_conversation_item(_user("hello"))
     assert tracker.record(ended_at="2026-08-13T10:01:00+00:00") is True
     row = store.list()[0]
-    # Only the whitelisted minimal fields exist in the stored row.
+    # Only the whitelisted minimal fields exist in the stored row — the
+    # Day 8 analytics columns are all non-sensitive metadata (duration,
+    # latency, language, failure category), never caller content.
     assert set(row) == {
         "call_id",
         "started_at",
@@ -422,12 +500,75 @@ def test_tracker_record_writes_minimal_row(store):
         "channel",
         "outcome",
         "reason",
+        "duration_s",
+        "avg_latency_s",
+        "language",
+        "failure_category",
     }
+    assert row["duration_s"] == 60.0
 
 
 # ---------------------------------------------------------------------------
 # Agent wiring: the escalation tool notifies the tracker
 # ---------------------------------------------------------------------------
+
+
+class _FakeSessionError:
+    def __init__(self, recoverable):
+        self.recoverable = recoverable
+
+
+class _FakeErrorEvent:
+    def __init__(self, error=None):
+        self.error = error
+
+
+def test_recoverable_error_does_not_mark_session_error(store):
+    # A transient (recoverable) error must not mark the call as a technical
+    # failure: the wiring only marks when the error is unrecoverable.
+    tracker = CallOutcomeTracker(
+        call_id="c1",
+        channel="browser",
+        started_at="2026-08-13T10:00:00+00:00",
+        store=store,
+    )
+    tracker.on_conversation_item(_user("Can you give me some wellness tips?"))
+    tracker.on_conversation_item(
+        _assistant("Here are some wellness tips: sleep well and stay active.")
+    )
+    ev = _FakeErrorEvent(error=_FakeSessionError(recoverable=True))
+    assert _error_is_unrecoverable(ev) is False
+    if _error_is_unrecoverable(ev):
+        tracker.mark_session_error()
+    assert tracker.session_error is False
+    assert tracker.outcome() == (OUTCOME_SUCCESS, REASON_HEALTH_GUIDANCE)
+    assert tracker.record() is True
+    assert store.list()[0]["failure_category"] is None
+
+
+def test_non_recoverable_error_marks_session_error(store):
+    tracker = CallOutcomeTracker(
+        call_id="c1",
+        channel="browser",
+        started_at="2026-08-13T10:00:00+00:00",
+        store=store,
+    )
+    ev = _FakeErrorEvent(error=_FakeSessionError(recoverable=False))
+    assert _error_is_unrecoverable(ev) is True
+    if _error_is_unrecoverable(ev):
+        tracker.mark_session_error()
+    assert tracker.session_error is True
+    assert tracker.record() is True
+    assert store.list()[0]["failure_category"] == "technical_error"
+
+
+def test_unknown_recoverability_preserves_previous_behavior():
+    # When recoverability cannot be determined, the previous behavior is
+    # preserved: the error still counts as a technical failure.
+    assert _error_is_unrecoverable(_FakeErrorEvent(error=None)) is True
+    assert (
+        _error_is_unrecoverable(_FakeErrorEvent(error=_FakeSessionError(None))) is True
+    )
 
 
 def test_assistant_constructor_defaults_unchanged():

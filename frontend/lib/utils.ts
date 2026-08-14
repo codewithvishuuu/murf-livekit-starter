@@ -93,10 +93,14 @@ export function getStyles(appConfig: AppConfig) {
 /**
  * Get a token source for a sandboxed LiveKit session
  * @param appConfig - The app configuration
+ * @param preferredLanguageRef - A ref holding the caller's selected language
  * @returns A token source for a sandboxed LiveKit session
  */
-export function getSandboxTokenSource(appConfig: AppConfig) {
-  return TokenSource.custom(async () => {
+export function getSandboxTokenSource(
+  appConfig: AppConfig,
+  preferredLanguageRef?: { current: 'en' | 'hi' | null }
+) {
+  return TokenSource.literal(async () => {
     const url = new URL(process.env.NEXT_PUBLIC_CONN_DETAILS_ENDPOINT!, window.location.origin);
     const sandboxId = appConfig.sandboxId ?? '';
     const roomConfig = appConfig.agentName
@@ -113,10 +117,17 @@ export function getSandboxTokenSource(appConfig: AppConfig) {
           'X-Sandbox-Id': sandboxId,
         },
         body: JSON.stringify({
+          participant_metadata: preferredLanguageRef?.current
+            ? JSON.stringify({ preferred_language: preferredLanguageRef.current })
+            : undefined,
           room_config: roomConfig,
         }),
       });
-      return await res.json();
+      const data = await res.json();
+      return {
+        serverUrl: data.server_url ?? data.serverUrl,
+        participantToken: data.participant_token ?? data.participantToken,
+      };
     } catch (error) {
       console.error('Error fetching connection details:', error);
       throw new Error('Error fetching connection details!');

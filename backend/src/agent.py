@@ -17,6 +17,7 @@ from livekit.agents import (
     RunContext,
     cli,
     function_tool,
+    llm,
     room_io,
     tokenize,
 )
@@ -28,7 +29,7 @@ import health_facilities
 from call_outcomes import CallOutcomeTracker
 from memory import CALLER_FIELDS, memory_store
 from murf_stream_guard import StallSafeMurfTTS
-from prompt import OUTBOUND_OPENING
+from prompt import CLINIC_SPECIALIST_PROMPT, OUTBOUND_OPENING, PREFERRED_LANGUAGE_PROMPT
 from prompt import SYSTEM_PROMPT as AAROGYA_SYSTEM_PROMPT
 
 logger = logging.getLogger("agent")
@@ -98,20 +99,193 @@ def _is_outbound_room(room: rtc.Room | None) -> bool:
         return False
 
 
+def _error_is_unrecoverable(ev: object) -> bool:
+    """Whether a session error event is an unrecoverable pipeline failure.
+
+    Transient/recoverable errors (for example a retried API hiccup) must
+    not mark the call as a technical failure. When recoverability cannot
+    be determined, the previous behavior is preserved: the error counts.
+    """
+    error = getattr(ev, "error", None)
+    return getattr(error, "recoverable", None) is not True
+
+
+class ClinicAppointmentSpecialist(Agent):
+    """Day 9 — the Clinic & Appointment Specialist.
+
+    A separate agent with its own instructions. It ONLY handles clinic and
+    appointment-related assistance; it never diagnoses, never handles
+    emergencies itself, and never asks for sensitive credentials. Red-flag
+    symptoms and diagnosis requests stay with the main assistant's Day 7
+    human-support flow — the main agent must never hand those off here.
+
+    It receives a short handoff context (only the relevant appointment
+    request, not the whole conversation) via its chat context, so the
+    caller does not have to repeat the request.
+
+    When the appointment task is complete, the caller switches to a normal
+    health/wellness topic, or the caller explicitly asks for the main
+    assistant, the specialist returns the caller to the original main
+    Assistant instance with the handback_to_main_agent tool. Only a short
+    handback context (specialist summary plus the caller's latest request)
+    is passed back — never the whole conversation.
+    """
+
+    def __init__(
+        self,
+        *,
+        handoff_context: str,
+        main_agent: "Assistant",
+        preferred_language: str = "en",
+    ) -> None:
+        self._preferred_language = (
+            preferred_language if preferred_language in ("en", "hi") else "en"
+        )
+        chat_ctx = llm.ChatContext()
+        chat_ctx.add_message(
+            role="system",
+            content=(
+                "The caller was handed off by Aarogya Sahayak, the main "
+                f"health assistant. Handoff context: {handoff_context}"
+            ),
+        )
+        instructions = (
+            f"{CLINIC_SPECIALIST_PROMPT}\n"
+            f"{PREFERRED_LANGUAGE_PROMPT.format(preferred_language=self._preferred_language)}"
+        )
+        super().__init__(instructions=instructions, chat_ctx=chat_ctx)
+        self._main_agent = main_agent
+
+    async def on_enter(self) -> None:
+        # Introduce the specialist right after the handoff. Not awaited:
+        # on_enter can be triggered from within a tool call, and awaiting
+        # speech playout there can cause a circular wait (LiveKit docs).
+        # The reply is still watched by the session run state.
+        self.session.generate_reply(
+            instructions=(
+                "Introduce yourself as the clinic and appointment specialist. "
+                "Briefly acknowledge the caller's appointment-related request "
+                "from the handoff context, then ask one short follow-up "
+                "question that continues helping with that request. Reply in "
+                "the caller's preferred language and native script exactly as "
+                "stated in your instructions — never infer the language from "
+                "the caller's message."
+            )
+        )
+
+    @function_tool
+    async def handback_to_main_agent(
+        self, context: RunContext, summary: str
+    ) -> "Assistant":
+        """Return the caller to the main Aarogya Sahayak health assistant.
+
+        Use this tool ONLY when:
+        - the caller's clinic/appointment task is complete, OR
+        - the caller changes to a normal health/wellness or general topic
+          that belongs to the main assistant, OR
+        - the caller explicitly asks to speak with the main health assistant.
+
+        BEFORE calling this tool, tell the caller in their own language:
+        "Sure. I'll connect you back with the main health assistant for that."
+        Then call this tool. The main assistant will introduce itself, so the
+        caller does not need to repeat anything.
+
+        Do NOT use this tool for appointment-related follow-ups you can still
+        answer. Do NOT use it for emergencies, red-flag symptoms, or diagnosis
+        requests — give the emergency guidance instead; red-flag symptoms
+        never go through a routine handback.
+
+        Args:
+            summary: A short summary (one or two sentences, in the caller's language) of the clinic/appointment discussion or the reason the caller is returning to the main assistant.
+        """
+        main_agent = self._main_agent
+        last_user = _last_user_message(context)
+        stripped = summary.strip()
+        if stripped and last_user:
+            handback_context = f"{stripped}\nCaller's latest request: {last_user}"
+        else:
+            handback_context = (
+                stripped
+                or last_user
+                or "The caller's clinic and appointment discussion is complete."
+            )
+        main_agent._handback_context = handback_context
+        # The main agent's chat context is read-only while it was used by
+        # the pipeline, so copy it, add the handback context, and swap it in
+        # via update_chat_ctx (the main agent has no live activity here, so
+        # this is a plain swap). Only a short context is added — never the
+        # whole conversation.
+        updated_ctx = main_agent.chat_ctx.copy()
+        updated_ctx.add_message(
+            role="system",
+            content=(
+                "The Clinic & Appointment Specialist returned the caller to "
+                "you, the main Aarogya Sahayak assistant. Handback context: "
+                f"{handback_context}. Continue the conversation naturally; "
+                "the caller must not repeat what was already discussed."
+            ),
+        )
+        await main_agent.update_chat_ctx(updated_ctx)
+        logger.info(
+            "handing caller back to main assistant (user_id=%s)",
+            main_agent._user_id,
+        )
+        return main_agent
+
+
 class Assistant(Agent):
     def __init__(
         self,
         *,
         user_id: str | None = None,
         outbound_instructions: str | None = None,
+        preferred_language: str = "en",
         on_escalation_created: Callable[[], None] | None = None,
+        on_tool_failure: Callable[[], None] | None = None,
     ) -> None:
+        self._preferred_language = (
+            preferred_language if preferred_language in ("en", "hi") else "en"
+        )
         instructions = AAROGYA_SYSTEM_PROMPT
         if outbound_instructions:
             instructions = f"{instructions}\n{outbound_instructions}"
+        instructions = (
+            f"{instructions}\n"
+            f"{PREFERRED_LANGUAGE_PROMPT.format(preferred_language=self._preferred_language)}"
+        )
         super().__init__(instructions=instructions)
         self._user_id = user_id
         self._on_escalation_created = on_escalation_created
+        self._on_tool_failure = on_tool_failure
+        self._handback_context: str | None = None
+
+    async def on_enter(self) -> None:
+        # Day 9 (optional) — specialist handback. At the initial session start
+        # there is no pending handback context, so the normal greeting flow is
+        # unchanged. When the Clinic & Appointment Specialist returns the
+        # caller, the handback_to_main_agent tool stores the context here so
+        # the main agent can introduce itself and continue without asking the
+        # caller to repeat anything.
+        handback_context = self._handback_context
+        if handback_context is None:
+            return
+        self._handback_context = None
+        # Not awaited: on_enter can be triggered from within a tool call, and
+        # awaiting speech playout there can cause a circular wait (LiveKit
+        # docs). The reply is still watched by the session run state.
+        self.session.generate_reply(
+            instructions=(
+                "The Clinic & Appointment Specialist returned the caller to "
+                f"you. Handback context: {handback_context} "
+                "Briefly acknowledge the caller and the specialist's help, "
+                "introduce yourself as Aarogya Sahayak, the main health "
+                "assistant, and continue naturally in the caller's preferred "
+                "language and native script exactly as stated in your "
+                "instructions — never infer the language from the caller's "
+                "message — without asking them to repeat what was already "
+                "discussed."
+            )
+        )
 
     @function_tool
     async def lookup_user(self, context: RunContext) -> str:
@@ -318,7 +492,7 @@ class Assistant(Agent):
             what_happened: A brief note of what the caller reported.
             agent_checked: A brief note of what you already explained or checked with the caller.
             urgency: "low", "medium", "high", or "emergency". Defaults to "medium". Use "emergency" only for clearly life-threatening symptoms.
-            language: The language the caller spoke, if known.
+            language: The language for the human team to use. Defaults to the caller's preferred language ("English" or "Hindi"); pass a value only when a different language is genuinely appropriate.
             preferred_follow_up: How the human team should follow up, for example "voice call". Defaults to "voice call".
         """
         if not _confirmed_escalation_request(context):
@@ -331,19 +505,26 @@ class Assistant(Agent):
                 "Do NOT create the request until the caller says yes."
             )
         resolved_follow_up = preferred_follow_up or "voice call"
+        resolved_language = language
+        if not resolved_language and self._preferred_language in ("en", "hi"):
+            resolved_language = {"en": "English", "hi": "Hindi"}[
+                self._preferred_language
+            ]
         result = escalations.escalation_store().create(
             caller_id=self._user_id,
             summary=summary,
             what_happened=what_happened,
             agent_checked=agent_checked,
             urgency=urgency,
-            language=language,
+            language=resolved_language,
             preferred_follow_up=resolved_follow_up,
         )
         if result is None:
             logger.warning(
                 "escalation could not be created (user_id=%s)", self._user_id
             )
+            if self._on_tool_failure is not None:
+                self._on_tool_failure()
             return (
                 "I couldn't create the human-help request right now. Please try "
                 "again in a few minutes."
@@ -366,6 +547,50 @@ class Assistant(Agent):
             f"Your request has been created with reference ID {reference_id}. "
             f"A human support team can review it. I cannot guarantee an "
             f"immediate response."
+        )
+
+    @function_tool
+    async def handoff_to_clinic_specialist(
+        self, context: RunContext, request_summary: str
+    ) -> ClinicAppointmentSpecialist:
+        """Hand the caller over to the Clinic & Appointment Specialist for appointment-related assistance.
+
+        Use this tool ONLY when the caller's PRIMARY request is specifically
+        about arranging a clinic or doctor visit: booking an appointment,
+        finding out what type of clinic or appointment they need, appointment
+        preparation, clinic visit logistics, or questions about what
+        information is needed for an appointment.
+
+        BEFORE calling this tool, tell the caller in their own language:
+        "Sure, I'll connect you with our clinic and appointment specialist."
+        Then call this tool. The specialist will introduce itself.
+
+        Do NOT use this tool for ordinary health or wellness questions (sleep,
+        diet, exercise, stress, common symptoms, general wellness) — answer
+        those normally. Do NOT use it for emergencies, red-flag symptoms, or
+        diagnosis requests — those follow the human support escalation flow
+        (create_escalation) instead, never a specialist handoff.
+
+        Args:
+            request_summary: A short summary (one or two sentences, in the caller's language) of the appointment-related request that triggered the handoff. Include only the relevant clinic/appointment details.
+        """
+        summary = request_summary.strip()
+        last_user = _last_user_message(context)
+        if summary and last_user:
+            handoff_context = f"{summary}\nCaller's exact request: {last_user}"
+        else:
+            handoff_context = (
+                summary
+                or last_user
+                or "Caller asked for clinic and appointment assistance."
+            )
+        logger.info(
+            "handing off to clinic & appointment specialist (user_id=%s)", self._user_id
+        )
+        return ClinicAppointmentSpecialist(
+            handoff_context=handoff_context,
+            main_agent=self,
+            preferred_language=self._preferred_language,
         )
 
     # To add more tools, use the @function_tool decorator.
@@ -426,6 +651,27 @@ async def my_agent(ctx: JobContext):
 
     if user_id is None:
         user_id = f"anon:{ctx.room.name}"
+
+    # Preferred language (Day 10): the caller picks English or Hindi in the
+    # frontend before the call starts. The frontend sends it as JSON in the
+    # participant metadata (e.g. {"preferred_language": "hi"}), which is
+    # embedded in the join token by the token endpoint and shows up here on
+    # the caller's participant. Unknown, missing, or malformed values fall
+    # back to English ("en"). The value is authoritative for the whole call
+    # and is never inferred from individual messages.
+    preferred_language = "en"
+    if participant is not None and participant.metadata:
+        try:
+            meta = json.loads(participant.metadata)
+            lang = meta.get("preferred_language")
+            if lang in ("en", "hi"):
+                preferred_language = lang
+        except (json.JSONDecodeError, TypeError):
+            logger.warning(
+                "participant metadata is not valid JSON (%s), defaulting to en",
+                user_id,
+            )
+    logger.info("preferred_language=%s (user_id=%s)", preferred_language, user_id)
 
     # Outbound (Day 6) calls are launched by the dialer into rooms flagged in
     # metadata; only those rooms get the extra outbound-opening instructions.
@@ -511,12 +757,24 @@ async def my_agent(ctx: JobContext):
     # Day 8 — call outcome tracking. A per-call tracker collects
     # deterministic success signals while the conversation runs and records
     # the outcome when the job (call) shuts down. It only observes chat
-    # items and the escalation tool; it never stores transcripts or caller
-    # content (see call_outcomes.py).
+    # items, transcription events, agent state, and session errors; it never
+    # stores transcripts or caller content (see call_outcomes.py).
     tracker = CallOutcomeTracker(call_id=f"call-{uuid4().hex}", channel=channel)
     session.on(
         "conversation_item_added", lambda ev: tracker.on_conversation_item(ev.item)
     )
+    # Day 8 (advanced) — the final (committed) transcription marks when the
+    # caller finished speaking; the agent entering the "speaking" state marks
+    # the start of its spoken response. Together these measure per-turn
+    # response latency (see CallOutcomeTracker).
+    session.on("user_input_transcribed", tracker.on_user_input_transcribed)
+    session.on("agent_state_changed", tracker.on_agent_state_changed)
+
+    def _on_session_error(ev: object) -> None:
+        if _error_is_unrecoverable(ev):
+            tracker.mark_session_error()
+
+    session.on("error", _on_session_error)
 
     async def _record_call_outcome() -> None:
         tracker.record()
@@ -528,7 +786,9 @@ async def my_agent(ctx: JobContext):
         agent=Assistant(
             user_id=user_id,
             outbound_instructions=outbound_instructions,
+            preferred_language=preferred_language,
             on_escalation_created=tracker.mark_escalation_created,
+            on_tool_failure=tracker.mark_tool_failure,
         ),
         room=ctx.room,
         room_options=room_io.RoomOptions(

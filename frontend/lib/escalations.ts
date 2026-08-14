@@ -18,6 +18,8 @@ export interface EscalationRecord {
   preferred_follow_up: string | null;
   status: string;
   created_at: string;
+  resolved_callback_at?: string | null;
+  resolved_callback_count?: number | null;
 }
 
 const CANDIDATE_PATHS = [

@@ -1,5 +1,5 @@
 import Link from 'next/link';
-import { HeartPulseIcon, InboxIcon } from 'lucide-react';
+import { HeartPulseIcon, InboxIcon, PhoneCallIcon } from 'lucide-react';
 import type { EscalationRecord } from '@/lib/escalations';
 import { getEscalations } from '@/lib/escalations';
 import { cn } from '@/lib/shadcn/utils';
@@ -73,12 +73,45 @@ function EscalationCard({ record }: { record: EscalationRecord }) {
           Already explained: {record.agent_checked}
         </p>
       )}
+
+      {record.status === 'resolved' && (
+        <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-emerald-500/10 pt-3">
+          <form action="/api/escalations/callback" method="post">
+            <input type="hidden" name="reference_id" value={record.reference_id} />
+            <input type="hidden" name="force" value={record.resolved_callback_at ? '1' : '0'} />
+            <button
+              type="submit"
+              className="inline-flex items-center gap-1.5 rounded-full border border-emerald-500/20 bg-emerald-500/10 px-3 py-1.5 text-xs font-semibold text-emerald-700 transition-colors hover:border-emerald-500/35 hover:bg-emerald-500/15 dark:text-emerald-300"
+            >
+              <PhoneCallIcon className="size-3.5" />
+              {record.resolved_callback_at ? 'Call user again' : 'Call user'}
+            </button>
+          </form>
+          {record.resolved_callback_at && (
+            <span className="text-muted-foreground text-xs leading-5">
+              Callback requested {formatTime(record.resolved_callback_at)}
+              {record.resolved_callback_count ? ` (x${record.resolved_callback_count})` : ''}
+            </span>
+          )}
+          <span className="text-muted-foreground text-xs leading-5 italic">
+            Only a resolved-request call: the caller hears the standard Aarogya Sahayak opening,
+            never the summary.
+          </span>
+        </div>
+      )}
     </li>
   );
 }
 
-export default async function AdminPage() {
+interface AdminPageProps {
+  searchParams: Promise<{ callback?: string; reason?: string }>;
+}
+
+export default async function AdminPage({ searchParams }: AdminPageProps) {
   const escalations = await getEscalations();
+  const params = await searchParams;
+  const callbackResult = params.callback;
+  const callbackReason = params.reason;
 
   return (
     <main className="flex h-full min-h-0 w-full justify-center overflow-y-auto bg-[radial-gradient(circle_at_top,_rgba(16,185,129,0.12),_transparent_55%)] px-3 py-6 sm:px-4 lg:px-6">
@@ -104,6 +137,23 @@ export default async function AdminPage() {
             Back to conversation
           </Link>
         </div>
+
+        {callbackResult === 'ok' && (
+          <div className="mb-4 rounded-2xl border border-emerald-500/15 bg-emerald-500/10 px-4 py-3 text-sm leading-5 text-emerald-800 dark:text-emerald-300">
+            Resolution callback requested. The user receives a standard Aarogya Sahayak call — no
+            summary or private details are shared.
+          </div>
+        )}
+        {callbackResult === 'error' && (
+          <div className="mb-4 rounded-2xl border border-amber-500/15 bg-amber-500/10 px-4 py-3 text-sm leading-5 text-amber-800 dark:text-amber-300">
+            Callback could not be requested.{' '}
+            {callbackReason ? (
+              <span className="font-medium">{callbackReason}</span>
+            ) : (
+              'The request may not be resolved, may have no dialable number, or a callback may already exist.'
+            )}
+          </div>
+        )}
 
         {escalations.length === 0 ? (
           <div className="bg-background/95 flex w-full flex-col items-center justify-center rounded-3xl border border-emerald-500/10 px-5 py-12 text-center backdrop-blur">

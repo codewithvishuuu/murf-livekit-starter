@@ -69,13 +69,23 @@ export async function POST(req: Request) {
       );
     }
 
+    // The caller's selected conversation language ("en" or "hi"), sent by the
+    // frontend as JSON in the participant metadata. It is embedded in the
+    // participant token so the agent can read it when the caller joins the
+    // room. Unknown, missing, or malformed values fall back to English on the
+    // agent side.
+    const participantMetadata =
+      typeof body?.participant_metadata === 'string' && body.participant_metadata
+        ? body.participant_metadata
+        : undefined;
+
     // Generate participant token
     const participantName = 'user';
     const participantIdentity = await resolveCallerIdentity();
     const roomName = `voice_assistant_room_${Math.floor(Math.random() * 10_000)}`;
 
     const participantToken = await createParticipantToken(
-      { identity: participantIdentity, name: participantName },
+      { identity: participantIdentity, name: participantName, metadata: participantMetadata },
       roomName,
       roomConfig
     );

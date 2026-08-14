@@ -1,4 +1,13 @@
-import { HeartPulseIcon, Loader2Icon, MicOffIcon, ShieldCheckIcon } from 'lucide-react';
+import Link from 'next/link';
+import {
+  ArrowUpRightIcon,
+  ChartColumnIcon,
+  HeartPulseIcon,
+  LifeBuoyIcon,
+  Loader2Icon,
+  MicOffIcon,
+  ShieldCheckIcon,
+} from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/shadcn/utils';
 
@@ -115,6 +124,55 @@ export const WelcomeView = ({
             <span className="leading-5">General health guidance only. Not a doctor.</span>
           </div>
         </section>
+
+        {!hideSetupHelp && (
+          <nav aria-label="Explore Aarogya Sahayak" className="mt-8 w-full">
+            <div className="mx-auto w-full max-w-2xl">
+              <p className="text-foreground text-center text-base font-semibold tracking-tight">
+                Explore Aarogya Sahayak
+              </p>
+              <p className="text-muted-foreground mt-1.5 text-center text-xs leading-5">
+                Tools to track conversations and access support
+              </p>
+              <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <Link
+                  href="/analytics"
+                  className="bg-background/95 group flex items-center gap-3.5 rounded-3xl border border-emerald-500/10 px-5 py-4 text-left shadow-[0_12px_40px_-24px_rgba(15,23,42,0.35)] backdrop-blur transition-[border-color,background-color,box-shadow] duration-300 hover:border-emerald-500/25 hover:bg-emerald-500/5 focus-visible:border-emerald-500/40 focus-visible:ring-2 focus-visible:ring-emerald-500/30"
+                >
+                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-emerald-500/10 text-emerald-700 ring-1 ring-emerald-500/20 transition-colors duration-300 group-hover:bg-emerald-500/15 dark:text-emerald-300">
+                    <ChartColumnIcon className="size-5" />
+                  </div>
+                  <span className="flex min-w-0 flex-1 flex-col">
+                    <span className="text-foreground text-sm font-semibold tracking-tight">
+                      Call Analytics
+                    </span>
+                    <span className="text-muted-foreground mt-0.5 text-xs leading-5">
+                      View call performance, outcomes & insights
+                    </span>
+                  </span>
+                  <ArrowUpRightIcon className="text-muted-foreground/60 group-hover:text-muted-foreground size-4 shrink-0 transition-[transform,color] duration-300 group-hover:translate-x-0.5 group-hover:-translate-y-0.5" />
+                </Link>
+                <Link
+                  href="/support"
+                  className="bg-background/95 group flex items-center gap-3.5 rounded-3xl border border-emerald-500/10 px-5 py-4 text-left shadow-[0_12px_40px_-24px_rgba(15,23,42,0.35)] backdrop-blur transition-[border-color,background-color,box-shadow] duration-300 hover:border-emerald-500/25 hover:bg-emerald-500/5 focus-visible:border-emerald-500/40 focus-visible:ring-2 focus-visible:ring-emerald-500/30"
+                >
+                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-emerald-500/10 text-emerald-700 ring-1 ring-emerald-500/20 transition-colors duration-300 group-hover:bg-emerald-500/15 dark:text-emerald-300">
+                    <LifeBuoyIcon className="size-5" />
+                  </div>
+                  <span className="flex min-w-0 flex-1 flex-col">
+                    <span className="text-foreground text-sm font-semibold tracking-tight">
+                      Human Support
+                    </span>
+                    <span className="text-muted-foreground mt-0.5 text-xs leading-5">
+                      Track your support request & reference ID
+                    </span>
+                  </span>
+                  <ArrowUpRightIcon className="text-muted-foreground/60 group-hover:text-muted-foreground size-4 shrink-0 transition-[transform,color] duration-300 group-hover:translate-x-0.5 group-hover:-translate-y-0.5" />
+                </Link>
+              </div>
+            </div>
+          </nav>
+        )}
 
         {!hideSetupHelp && (
           <div className="mt-4 flex w-full items-center justify-center px-4 text-center">
