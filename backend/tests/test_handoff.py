@@ -507,6 +507,136 @@ async def test_handback_explicit_request_scripted() -> None:
 
 
 @pytest.mark.asyncio
+async def test_handback_confirmation_stays_with_main_agent_scripted() -> None:
+    """Regression: after the handback, the caller's confirmation of the
+    handback must stay with the ORIGINAL main agent.
+
+    Exact reported scenario: the specialist announces the handback
+    ("Sure. I'll connect you back with the main health assistant for
+    that."), the session returns the caller to the original main agent,
+    and the main agent introduces itself. When the caller then confirms
+    ("Yes, please connect me."), the main agent must answer normally —
+    it must NOT re-announce a handoff and must NOT hand the caller back
+    to the ClinicAppointmentSpecialist.
+
+    Root cause guarded here: the main agent's chat context previously
+    kept the stale pre-handoff turn (the caller's appointment request
+    plus the dangling handoff_to_clinic_specialist tool call and its
+    empty output). The main agent's LLM saw that dangling handoff and
+    re-routed the caller to the specialist on the confirmation. The
+    handback must drop that stale turn, leaving the handback context as
+    the relevant context.
+    """
+    original_main = Assistant(user_id="scripted-caller")
+    scripted = ScriptedLLM(
+        _ScriptedStep(
+            text="Sure, I'll connect you with our clinic and appointment specialist.",
+            tool_name="handoff_to_clinic_specialist",
+            tool_arguments={
+                "request_summary": (
+                    "Caller wants to book an appointment for a general health checkup."
+                )
+            },
+        ),
+        _ScriptedStep(
+            text="Hi, I'm the clinic and appointment specialist. What type of "
+            "appointment are you looking for?"
+        ),
+        _ScriptedStep(
+            text="Sure. I'll connect you back with the main health assistant for that.",
+            tool_name="handback_to_main_agent",
+            tool_arguments={
+                "summary": (
+                    "The caller no longer needs appointment help and asked to "
+                    "be connected back to the main health assistant."
+                )
+            },
+        ),
+        _ScriptedStep(
+            text="Hi, I'm Aarogya Sahayak, the main health assistant. "
+            "Welcome back. How can I help you today?"
+        ),
+        _ScriptedStep(
+            text="You are now connected with me, the main health assistant. "
+            "How can I help you today?"
+        ),
+    )
+    async with (
+        scripted,
+        AgentSession(llm=scripted) as session,
+    ):
+        await session.start(original_main)
+        await session.run(
+            user_input="I want to book an appointment for a general health checkup."
+        )
+
+        # 1. The specialist announces the handback BEFORE the handoff and
+        # returns the EXACT original main agent instance.
+        result = await session.run(
+            user_input=(
+                "I don't need help with the appointment anymore. Please "
+                "connect me back to the main health assistant."
+            )
+        )
+        handoff_idx = _handoff_index(result)
+        assert handoff_idx is not None
+        msgs = _assistant_messages(result)
+        assert msgs
+        assert "connect you back with the main health assistant" in msgs[0].lower()
+        first_msg_idx = next(
+            i
+            for i, ev in enumerate(result.events)
+            if ev.type == "message" and ev.item.role == "assistant"
+        )
+        assert first_msg_idx < handoff_idx
+        handoffs = [ev for ev in result.events if ev.type == "agent_handoff"]
+        assert handoffs
+        assert handoffs[0].new_agent is original_main
+        # The main agent introduced itself after the handback.
+        assert "main health assistant" in msgs[-1].lower()
+        last_msg_idx = max(
+            i
+            for i, ev in enumerate(result.events)
+            if ev.type == "message" and ev.item.role == "assistant"
+        )
+        assert last_msg_idx > handoff_idx
+
+        # 2. The handback context is preserved on the main agent, and the
+        # stale pre-handoff turn (appointment request + dangling handoff
+        # tool call + its output) is gone — it would otherwise make the
+        # main agent re-route the caller to the specialist.
+        ctx_text = _context_text(original_main)
+        assert "asked to be connected back to the main health assistant" in ctx_text
+        assert (
+            "Aarogya Sahayak, a friendly AI Health Access Voice Assistant" in ctx_text
+        )
+        stale_types = [
+            item.type
+            for item in original_main.chat_ctx.items
+            if item.type in ("function_call", "function_call_output")
+        ]
+        assert not stale_types
+        assert "I want to book an appointment for a general health checkup" not in (
+            ctx_text
+        )
+
+        # 3. The caller's confirmation of the handback is answered by the
+        # ORIGINAL main agent: a normal reply, no handoff event, and no
+        # handoff_to_clinic_specialist tool call.
+        result = await session.run(user_input="Yes, please connect me.")
+        msgs = _assistant_messages(result)
+        assert msgs
+        assert "main health assistant" in msgs[-1].lower()
+        assert not _has_handoff(result)
+        assert not any(
+            ev.type == "function_call"
+            and ev.item.name == "handoff_to_clinic_specialist"
+            for ev in result.events
+        )
+        assert session.current_agent is original_main
+
+
+@pytest.mark.asyncio
 async def test_appointment_followup_stays_with_specialist_scripted() -> None:
     """An appointment-related follow-up stays with the specialist: no
     handback is triggered while the specialist can still help."""

@@ -216,6 +216,26 @@ class ClinicAppointmentSpecialist(Agent):
         # this is a plain swap). Only a short context is added — never the
         # whole conversation.
         updated_ctx = main_agent.chat_ctx.copy()
+        # Drop the main agent's stale handoff turn: the caller's last message
+        # before the handoff, the handoff_to_clinic_specialist tool call, and
+        # its output. If left in place, the main agent's LLM sees the
+        # appointment request next to the dangling handoff tool call and
+        # re-routes the caller back to the specialist right after the
+        # handback (re-announcing the handoff and handing off again on the
+        # caller's confirmation). The handback context below carries the
+        # relevant information instead.
+        stale_items = list(updated_ctx.items)
+        last_user_index = max(
+            (
+                i
+                for i, item in enumerate(stale_items)
+                if item.type == "message" and getattr(item, "role", None) == "user"
+            ),
+            default=None,
+        )
+        if last_user_index is not None:
+            del stale_items[last_user_index:]
+        updated_ctx.items = stale_items
         updated_ctx.add_message(
             role="system",
             content=(
