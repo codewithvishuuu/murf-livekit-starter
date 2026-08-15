@@ -349,6 +349,82 @@ escalation.
   scrubbing, de-duplication, database-failure tolerance, and LLM-judged
   end-to-end permission flows.
 
+### Scheduled Reminder Calls (Day 11)
+
+The Day 6 outbound dialer can be **automated**: a reminder (destination +
+message + due time) is stored locally, and a scheduler loop dials the
+**exact same** `dial_outbound` function the moment the reminder falls due.
+No second dialing implementation, no extra service, no new infrastructure —
+the scheduler runs inside the agent-server process (started on
+`worker_started`) and can also run standalone.
+
+**Create a reminder** (from a terminal):
+
+```bash
+cd backend
+uv run python -m reminders add \
+  --at 2026-08-16T10:30:00+05:30 \
+  --to '+919876543210' \
+  --message 'Take your evening medication at 6pm.'
+# OK  REM-20260816-001
+```
+
+- `--at` must carry an **explicit timezone offset** (`Z` or `+hh:mm`); a
+  time without an offset is refused rather than silently assumed to be UTC
+  or local. All timestamps are stored as UTC (the project convention).
+- `--to` accepts the same destinations as `python -m telephony.outbound`
+  (E.164 phone number, SIP user, or `sip:` URI) and is validated with the
+  same rules before anything is stored.
+- `--message` is scrubbed of sensitive material (OTP/PIN/account numbers,
+  ...) before storage and is only ever passed to the agent through the
+  room metadata the dialer already supports — it is never logged.
+
+**Manage reminders:** `python -m reminders list`, `view REM-20260816-001`,
+`cancel REM-20260816-001` (only still-`pending` reminders can be cancelled).
+
+**Exactly-once triggering.** Due reminders are claimed with a single atomic
+SQLite `UPDATE` (`pending` → `triggered`), so two polls, two scheduler
+processes, or a restart can never dial the same reminder twice. Statuses:
+`pending` → `triggered` → `completed`/`failed` (`cancelled` for explicit
+cancellation).
+
+**What the reminder call says.** The agent runs its normal outbound opening
+(who is calling, why, how to end the call, opt-out honoured immediately)
+and then speaks the reminder message as a **reminder only** — it does not
+turn the message into a diagnosis or treatment plan, and the existing
+consent, opt-out, emergency and preferred-language rules stay active.
+
+**Creating a reminder by voice.** The main agent exposes a
+`schedule_reminder_call` tool (Hindi/English): the caller says what they
+want to be reminded about and when, and the reminder is stored with the
+destinations above. The destination is chosen as follows:
+
+- SIP callers (`sip-<digits>`) are called back on **their own number** —
+  the same rule the Day 7 escalation callback uses.
+- Browser/web/console callers fall back to the deployment-configured
+  **`OUTBOUND_DIAL_NUMBER`** — the same env destination the manual Day 6
+  outbound CLI dials when run without an argument. All destination forms
+  the CLI accepts are supported (E.164 number, SIP user, or full `sip:`
+  URI, e.g. `sip:vishal_demo123@sip.linphone.org`; a URI is collapsed to
+  its user part exactly like the CLI does). The value is validated with
+  the exact same rules and is operator configuration, never caller
+  speech. Without a valid configured destination the reminder is refused
+  safely (nothing is dialed, nothing is guessed).
+
+**Running the scheduler standalone** (the agent server normally runs it
+automatically):
+
+```bash
+cd backend
+uv run python -m reminders scheduler        # keep running
+uv run python -m reminders scheduler --once # process due reminders once, exit
+```
+
+Tuning: `REMINDER_POLL_INTERVAL_S` (default 30), `REMIN_DB_PATH` /
+`REMIN_JSON_PATH` (defaults in `backend/data/`). Storage follows the
+memory/escalations architecture: thread-safe SQLite that never raises, plus
+a staff-readable JSON mirror (never the public analytics dashboard).
+
 ### Testing
 
 The project includes an eval suite based on the LiveKit Agents [testing framework](https://docs.livekit.io/agents/build/testing/):
@@ -357,7 +433,7 @@ The project includes an eval suite based on the LiveKit Agents [testing framewor
 uv run pytest
 ```
 
-Tests are in [`tests/test_agent.py`](tests/test_agent.py) and use LLM-as-judge evaluations to verify the agent behaves correctly (friendly greetings, grounding, refusing harmful requests). Day 5 facility tests live in [`tests/test_health_facilities.py`](tests/test_health_facilities.py), Day 4 memory tests in [`tests/test_memory.py`](tests/test_memory.py), Day 6 outbound-dialing tests in [`tests/test_outbound.py`](tests/test_outbound.py) (fake client, no real calls), and Day 7 escalation tests in [`tests/test_escalations.py`](tests/test_escalations.py).
+Tests are in [`tests/test_agent.py`](tests/test_agent.py) and use LLM-as-judge evaluations to verify the agent behaves correctly (friendly greetings, grounding, refusing harmful requests). Day 5 facility tests live in [`tests/test_health_facilities.py`](tests/test_health_facilities.py), Day 4 memory tests in [`tests/test_memory.py`](tests/test_memory.py), Day 6 outbound-dialing tests in [`tests/test_outbound.py`](tests/test_outbound.py) (fake client, no real calls), and Day 7 escalation tests in [`tests/test_escalations.py`](tests/test_escalations.py). Day 11 reminder tests live in [`tests/test_reminders.py`](tests/test_reminders.py) (hermetic; mocked dialer, no real calls).
 
 To run tests in CI, you'll need to add `LIVEKIT_URL`, `LIVEKIT_API_KEY`, and `LIVEKIT_API_SECRET` as repository secrets.
 

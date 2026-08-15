@@ -1,12 +1,14 @@
 import Link from 'next/link';
 import {
   ArrowUpRightIcon,
+  BellIcon,
   ChartColumnIcon,
   HeartPulseIcon,
   LifeBuoyIcon,
   Loader2Icon,
   MicOffIcon,
   ShieldCheckIcon,
+  SparklesIcon,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/shadcn/utils';
@@ -48,11 +50,11 @@ export const WelcomeView = ({
 
   return (
     <div ref={ref} className={cn('h-full w-full overflow-y-auto', className)}>
-      <div className="flex min-h-full w-full flex-col items-center justify-center py-4 sm:py-6">
-        <section className="bg-background/95 mx-auto flex w-full max-w-2xl flex-col items-center justify-center rounded-[26px] border border-emerald-500/10 px-5 py-7 text-center shadow-[0_24px_80px_-36px_rgba(15,23,42,0.35)] backdrop-blur sm:px-8 sm:py-9 lg:px-10">
+      <div className="flex min-h-full w-full flex-col items-center justify-center py-3 sm:py-5">
+        <section className="bg-background/95 mx-auto flex w-full max-w-2xl flex-col items-center justify-center rounded-[26px] border border-emerald-500/10 px-5 py-6 text-center shadow-[0_24px_80px_-36px_rgba(15,23,42,0.35)] backdrop-blur sm:px-8 sm:py-7 lg:px-10">
           <div
             className={cn(
-              'mb-4 flex h-16 w-16 items-center justify-center rounded-full ring-1',
+              'mb-3 flex h-14 w-14 items-center justify-center rounded-full ring-1',
               isPermissionError
                 ? 'bg-rose-500/10 text-rose-700 ring-rose-500/20 dark:text-rose-300'
                 : isConnecting
@@ -61,11 +63,11 @@ export const WelcomeView = ({
             )}
           >
             {isConnecting ? (
-              <Loader2Icon className="size-8 animate-spin" />
+              <Loader2Icon className="size-7 animate-spin" />
             ) : isPermissionError ? (
-              <MicOffIcon className="size-8" />
+              <MicOffIcon className="size-7" />
             ) : (
-              <HeartPulseIcon className="size-8" />
+              <HeartPulseIcon className="size-7" />
             )}
           </div>
 
@@ -75,7 +77,7 @@ export const WelcomeView = ({
           <p className="text-muted-foreground mt-2 max-w-prose text-sm leading-6 sm:text-base">
             AI Health Access Assistant
           </p>
-          <p className="text-foreground mt-4 max-w-prose text-base leading-7 font-semibold sm:text-lg">
+          <p className="text-foreground mt-3 max-w-prose text-base leading-7 font-semibold sm:text-lg">
             {title}
           </p>
           <p className="text-muted-foreground mt-2 max-w-prose text-sm leading-6 sm:text-base">
@@ -83,13 +85,13 @@ export const WelcomeView = ({
           </p>
 
           {helperText && (
-            <div className="mt-5 w-full max-w-md rounded-2xl border border-emerald-500/15 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-800 dark:text-emerald-300">
+            <div className="mt-4 w-full max-w-md rounded-2xl border border-emerald-500/15 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-800 dark:text-emerald-300">
               {helperText}
             </div>
           )}
 
           {isCallEnded && callDuration && (
-            <div className="mt-5 flex w-full max-w-sm items-center justify-between gap-4 rounded-2xl border border-emerald-500/15 bg-emerald-500/5 px-4 py-3.5 shadow-sm">
+            <div className="mt-4 flex w-full max-w-sm items-center justify-between gap-4 rounded-2xl border border-emerald-500/15 bg-emerald-500/5 px-4 py-3.5 shadow-sm">
               <p className="text-muted-foreground text-xs font-medium tracking-[0.2em] uppercase">
                 Conversation duration
               </p>
@@ -97,7 +99,7 @@ export const WelcomeView = ({
             </div>
           )}
 
-          <div className="mt-7 flex w-full max-w-sm flex-col gap-3 sm:flex-row sm:justify-center">
+          <div className="mt-5 flex w-full max-w-sm flex-col gap-3 sm:flex-row sm:justify-center">
             <Button
               size="lg"
               disabled={startButtonDisabled}
@@ -119,25 +121,25 @@ export const WelcomeView = ({
             )}
           </div>
 
-          <div className="mt-5 flex items-center justify-center gap-2 rounded-full border border-emerald-500/20 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-700 dark:text-emerald-300">
+          <div className="mt-4 flex items-center justify-center gap-2 rounded-full border border-emerald-500/20 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-700 dark:text-emerald-300">
             <ShieldCheckIcon className="size-4 shrink-0" />
             <span className="leading-5">General health guidance only. Not a doctor.</span>
           </div>
         </section>
 
         {!hideSetupHelp && (
-          <nav aria-label="Explore Aarogya Sahayak" className="mt-8 w-full">
+          <nav aria-label="Explore Aarogya Sahayak" className="mt-6 w-full">
             <div className="mx-auto w-full max-w-2xl">
               <p className="text-foreground text-center text-base font-semibold tracking-tight">
                 Explore Aarogya Sahayak
               </p>
-              <p className="text-muted-foreground mt-1.5 text-center text-xs leading-5">
+              <p className="text-muted-foreground mt-1 text-center text-xs leading-5">
                 Tools to track conversations and access support
               </p>
-              <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
                 <Link
                   href="/analytics"
-                  className="bg-background/95 group flex items-center gap-3.5 rounded-3xl border border-emerald-500/10 px-5 py-4 text-left shadow-[0_12px_40px_-24px_rgba(15,23,42,0.35)] backdrop-blur transition-[border-color,background-color,box-shadow] duration-300 hover:border-emerald-500/25 hover:bg-emerald-500/5 focus-visible:border-emerald-500/40 focus-visible:ring-2 focus-visible:ring-emerald-500/30"
+                  className="bg-background/95 group flex items-center gap-3.5 rounded-3xl border border-emerald-500/10 px-5 py-3 text-left shadow-[0_12px_40px_-24px_rgba(15,23,42,0.35)] backdrop-blur transition-[border-color,background-color,box-shadow] duration-300 hover:border-emerald-500/25 hover:bg-emerald-500/5 focus-visible:border-emerald-500/40 focus-visible:ring-2 focus-visible:ring-emerald-500/30"
                 >
                   <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-emerald-500/10 text-emerald-700 ring-1 ring-emerald-500/20 transition-colors duration-300 group-hover:bg-emerald-500/15 dark:text-emerald-300">
                     <ChartColumnIcon className="size-5" />
@@ -154,7 +156,7 @@ export const WelcomeView = ({
                 </Link>
                 <Link
                   href="/support"
-                  className="bg-background/95 group flex items-center gap-3.5 rounded-3xl border border-emerald-500/10 px-5 py-4 text-left shadow-[0_12px_40px_-24px_rgba(15,23,42,0.35)] backdrop-blur transition-[border-color,background-color,box-shadow] duration-300 hover:border-emerald-500/25 hover:bg-emerald-500/5 focus-visible:border-emerald-500/40 focus-visible:ring-2 focus-visible:ring-emerald-500/30"
+                  className="bg-background/95 group flex items-center gap-3.5 rounded-3xl border border-emerald-500/10 px-5 py-3 text-left shadow-[0_12px_40px_-24px_rgba(15,23,42,0.35)] backdrop-blur transition-[border-color,background-color,box-shadow] duration-300 hover:border-emerald-500/25 hover:bg-emerald-500/5 focus-visible:border-emerald-500/40 focus-visible:ring-2 focus-visible:ring-emerald-500/30"
                 >
                   <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-emerald-500/10 text-emerald-700 ring-1 ring-emerald-500/20 transition-colors duration-300 group-hover:bg-emerald-500/15 dark:text-emerald-300">
                     <LifeBuoyIcon className="size-5" />
@@ -169,13 +171,47 @@ export const WelcomeView = ({
                   </span>
                   <ArrowUpRightIcon className="text-muted-foreground/60 group-hover:text-muted-foreground size-4 shrink-0 transition-[transform,color] duration-300 group-hover:translate-x-0.5 group-hover:-translate-y-0.5" />
                 </Link>
+                <Link
+                  href="/reminders"
+                  className="bg-background/95 group flex items-center gap-3.5 rounded-3xl border border-emerald-500/10 px-5 py-3 text-left shadow-[0_12px_40px_-24px_rgba(15,23,42,0.35)] backdrop-blur transition-[border-color,background-color,box-shadow] duration-300 hover:border-emerald-500/25 hover:bg-emerald-500/5 focus-visible:border-emerald-500/40 focus-visible:ring-2 focus-visible:ring-emerald-500/30"
+                >
+                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-emerald-500/10 text-emerald-700 ring-1 ring-emerald-500/20 transition-colors duration-300 group-hover:bg-emerald-500/15 dark:text-emerald-300">
+                    <BellIcon className="size-5" />
+                  </div>
+                  <span className="flex min-w-0 flex-1 flex-col">
+                    <span className="text-foreground text-sm font-semibold tracking-tight">
+                      Scheduled Reminders
+                    </span>
+                    <span className="text-muted-foreground mt-0.5 text-xs leading-5">
+                      Check your reminder status using its reference ID
+                    </span>
+                  </span>
+                  <ArrowUpRightIcon className="text-muted-foreground/60 group-hover:text-muted-foreground size-4 shrink-0 transition-[transform,color] duration-300 group-hover:translate-x-0.5 group-hover:-translate-y-0.5" />
+                </Link>
+                <Link
+                  href="/wellness-tips"
+                  className="bg-background/95 group flex items-center gap-3.5 rounded-3xl border border-emerald-500/10 px-5 py-3 text-left shadow-[0_12px_40px_-24px_rgba(15,23,42,0.35)] backdrop-blur transition-[border-color,background-color,box-shadow] duration-300 hover:border-emerald-500/25 hover:bg-emerald-500/5 focus-visible:border-emerald-500/40 focus-visible:ring-2 focus-visible:ring-emerald-500/30"
+                >
+                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-emerald-500/10 text-emerald-700 ring-1 ring-emerald-500/20 transition-colors duration-300 group-hover:bg-emerald-500/15 dark:text-emerald-300">
+                    <SparklesIcon className="size-5" />
+                  </div>
+                  <span className="flex min-w-0 flex-1 flex-col">
+                    <span className="text-foreground text-sm font-semibold tracking-tight">
+                      Wellness Tips
+                    </span>
+                    <span className="text-muted-foreground mt-0.5 text-xs leading-5">
+                      Get simple tips for hydration, sleep & healthy habits
+                    </span>
+                  </span>
+                  <ArrowUpRightIcon className="text-muted-foreground/60 group-hover:text-muted-foreground size-4 shrink-0 transition-[transform,color] duration-300 group-hover:translate-x-0.5 group-hover:-translate-y-0.5" />
+                </Link>
               </div>
             </div>
           </nav>
         )}
 
         {!hideSetupHelp && (
-          <div className="mt-4 flex w-full items-center justify-center px-4 text-center">
+          <div className="mt-3 flex w-full items-center justify-center px-4 text-center">
             <p className="text-muted-foreground max-w-prose text-xs leading-5 font-normal text-pretty sm:text-sm">
               For the best experience, allow microphone access and speak clearly.
             </p>

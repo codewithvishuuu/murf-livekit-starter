@@ -4,6 +4,7 @@ import logging
 import os
 import re
 from collections.abc import Callable
+from typing import Any
 from uuid import uuid4
 
 from dotenv import load_dotenv
@@ -29,8 +30,14 @@ import health_facilities
 from call_outcomes import CallOutcomeTracker
 from memory import CALLER_FIELDS, memory_store
 from murf_stream_guard import StallSafeMurfTTS
-from prompt import CLINIC_SPECIALIST_PROMPT, OUTBOUND_OPENING, PREFERRED_LANGUAGE_PROMPT
+from prompt import (
+    CLINIC_SPECIALIST_PROMPT,
+    OUTBOUND_OPENING,
+    PREFERRED_LANGUAGE_PROMPT,
+    REMINDER_MESSAGE_INSTRUCTIONS,
+)
 from prompt import SYSTEM_PROMPT as AAROGYA_SYSTEM_PROMPT
+from reminders import dialable_destination_for, parse_natural_when, reminder_store
 
 logger = logging.getLogger("agent")
 
@@ -84,6 +91,22 @@ def _confirmed_escalation_request(context: RunContext) -> bool:
     return bool(_AFFIRMATION_RE.search(last_user))
 
 
+def _outbound_room_metadata(room: rtc.Room | None) -> dict[str, Any]:
+    """Parsed JSON metadata of a dialer room (never raises).
+
+    The Day 6 dialer marks its rooms with ``outbound: true`` and merges
+    caller-provided extras (e.g. a scheduled reminder message) into the
+    same metadata; any malformed or non-dict payload is treated as empty.
+    """
+    if room is None or not room.metadata:
+        return {}
+    try:
+        metadata = json.loads(room.metadata)
+        return metadata if isinstance(metadata, dict) else {}
+    except (json.JSONDecodeError, TypeError):
+        return {}
+
+
 def _is_outbound_room(room: rtc.Room | None) -> bool:
     """True when the room was created for an outbound call by the dialer.
 
@@ -91,12 +114,7 @@ def _is_outbound_room(room: rtc.Room | None) -> bool:
     ``outbound: true``. Every other flow (browser, inbound SIP, console)
     keeps the pre-Day-6 behavior.
     """
-    if room is None or not room.metadata:
-        return False
-    try:
-        return json.loads(room.metadata).get("outbound") is True
-    except (json.JSONDecodeError, TypeError):
-        return False
+    return _outbound_room_metadata(room).get("outbound") is True
 
 
 def _error_is_unrecoverable(ev: object) -> bool:
@@ -570,6 +588,122 @@ class Assistant(Agent):
         )
 
     @function_tool
+    async def schedule_reminder_call(
+        self,
+        context: RunContext,
+        message: str,
+        when: str,
+        timezone: str | None = None,
+    ) -> str:
+        """Schedule an automatic phone call to the caller LATER, delivering a reminder message.
+
+        Use this tool ONLY when the caller explicitly asks the service to
+        CALL THEM BACK later with a reminder (for example a medication,
+        water, appointment, or follow-up reminder). The call is placed by
+        the existing outbound calling system at the requested time.
+
+        The requested time can be relative ("in 5 minutes", "5 minute
+        baad", "aadha ghanta baad") or an absolute clock time ("today at
+        2 PM", "kal subah 9 baje", "tomorrow 9:30 am").
+
+        TIMEZONE RULES:
+        - Relative times need no timezone.
+        - Absolute clock times REQUIRE the caller's timezone (for example
+          "India", "Pakistan", or "+05:30"). If the caller gave a clock
+          time but you do not know their timezone, ask them first (for
+          example "Aapka timezone ya area kya hai? Jaise India ya
+          +05:30?") and call this tool again. NEVER guess a timezone.
+        - If the time is ambiguous (for example "2 baje" without saying
+          subah/shaam, or no AM/PM), ask the caller to clarify first.
+
+        Args:
+            message: The reminder message the caller wants delivered by phone call.
+            when: The requested time as a natural-language phrase, e.g. "in 5 minutes", "today at 2pm", "kal subah 9 baje", "5 minute baad".
+            timezone: The caller's timezone or location for absolute clock times, e.g. "Asia/Kolkata", "India", or "+05:30". Leave unset for relative times.
+        """
+        if not message or not str(message).strip():
+            return (
+                "No reminder message was provided. Ask the caller what they "
+                "want to be reminded about, then call this tool again. Do "
+                "NOT create the reminder yet."
+            )
+        destination = dialable_destination_for(self._user_id)
+        if destination is None:
+            return (
+                "This caller cannot receive a scheduled reminder phone call: "
+                "no dialable phone number is available for them in this "
+                "session. Do NOT create the reminder. Kindly tell the caller "
+                "that phone reminder calls are only available to callers on "
+                "a phone line with a dialable number."
+            )
+        parsed = parse_natural_when(when, timezone=timezone)
+        if parsed.needs_timezone:
+            return (
+                "The caller asked for an absolute clock time, but their "
+                "timezone is unknown. Ask the caller for their timezone or "
+                "location (for example 'India', 'Pakistan', or '+05:30'), "
+                "then call this tool again with it. Do NOT create the "
+                "reminder yet."
+            )
+        if parsed.error == "invalid_timezone":
+            return (
+                f"The timezone {timezone!r} is not recognized. Ask the "
+                f"caller for their timezone or location (for example "
+                f"'India' or '+05:30'). Do NOT create the reminder yet."
+            )
+        if parsed.error == "past_time":
+            return (
+                f"The requested time ({parsed.scheduled_at or when}) is "
+                f"already in the past. Ask the caller for a future time. Do "
+                f"NOT create the reminder yet."
+            )
+        if parsed.error == "ambiguous_time":
+            return (
+                f"The requested time {when!r} is ambiguous (for example no "
+                f"AM/PM or morning/evening was given). Ask the caller to "
+                f"clarify, then call this tool again. Do NOT create the "
+                f"reminder yet."
+            )
+        if parsed.error == "unrecognized_time" or parsed.scheduled_at is None:
+            return (
+                f"I could not understand the requested time {when!r}. Ask "
+                f"the caller for a clear time such as 'in 5 minutes', "
+                f"'today at 2 PM', or 'tomorrow 9 AM'. Do NOT create the "
+                f"reminder yet."
+            )
+        created = reminder_store().create(
+            destination=destination,
+            message=message,
+            scheduled_at=parsed.scheduled_at,
+        )
+        if created is None:
+            logger.warning("reminder could not be created (user_id=%s)", self._user_id)
+            if self._on_tool_failure is not None:
+                self._on_tool_failure()
+            return (
+                "I couldn't schedule the reminder call right now. Please "
+                "try again in a few minutes."
+            )
+        reference_id, _note = created
+        when_text = (
+            parsed.local_display
+            if parsed.local_display
+            else f"at {parsed.scheduled_at} UTC"
+        )
+        logger.info(
+            "scheduled reminder call (reference_id=%s, user_id=%s)",
+            reference_id,
+            self._user_id,
+        )
+        return (
+            f"Reminder scheduled successfully. Reference ID: {reference_id}. "
+            f"The caller will receive a phone call {when_text} with the "
+            f"reminder message. Confirm this warmly to the caller in their "
+            f"preferred language and native script, mention the scheduled "
+            f"time, and do not promise anything beyond this."
+        )
+
+    @function_tool
     async def handoff_to_clinic_specialist(
         self, context: RunContext, request_summary: str
     ) -> ClinicAppointmentSpecialist:
@@ -633,12 +767,45 @@ class Assistant(Agent):
 
 server = AgentServer()
 
+# Kept as a module-level reference so the background reminder scheduler task
+# is not garbage-collected while the server runs.
+_reminder_scheduler_task: asyncio.Task | None = None
+
 
 def prewarm(proc: JobProcess):
     proc.userdata["vad"] = silero.VAD.load()
 
 
 server.setup_fnc = prewarm
+
+
+def _start_reminder_scheduler() -> None:
+    """Launch the Day 11 reminder loop in the agent-server process.
+
+    Fired once per server process when the worker registers with LiveKit
+    (``worker_started``). The scheduler lives alongside the agent server, so
+    it keeps polling while the server idles between calls, with no extra
+    service or deployment step. It calls the EXACT same ``dial_outbound``
+    used by manual outbound calls; exactly-once triggering is guaranteed by
+    the reminder store's atomic claim, not by process affinity.
+    """
+    from reminders import run_scheduler
+
+    global _reminder_scheduler_task
+
+    async def _run() -> None:
+        try:
+            await run_scheduler()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("reminder scheduler stopped unexpectedly")
+
+    logger.info("starting the scheduled reminder caller")
+    _reminder_scheduler_task = asyncio.create_task(_run(), name="reminder-scheduler")
+
+
+server.on("worker_started", _start_reminder_scheduler)
 
 
 @server.rtc_session(agent_name="my-agent")
@@ -702,6 +869,16 @@ async def my_agent(ctx: JobContext):
     if outbound:
         caller_name = os.getenv("OUTBOUND_CALLER_NAME", "Aarogya Sahayak")
         outbound_instructions = OUTBOUND_OPENING.format(caller_name=caller_name)
+        # Day 11 — scheduled reminder calls attach their message to the room
+        # metadata via the dialer's existing metadata_extra support; when one
+        # is present, the agent speaks it (as a reminder only) after its
+        # opening. All other outbound calls are byte-for-byte unchanged.
+        reminder_message = _outbound_room_metadata(ctx.room).get("reminder_message")
+        if reminder_message:
+            outbound_instructions = (
+                f"{outbound_instructions}\n"
+                f"{REMINDER_MESSAGE_INSTRUCTIONS.format(message=reminder_message)}"
+            )
     logger.info("room_mode=%s", "outbound" if outbound else "standard")
 
     # Day 8 — call analytics. Resolve the channel so each completed call can
